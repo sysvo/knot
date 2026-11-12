@@ -147,3 +147,15 @@ vite.config.ts.timestamp-*
 
 # Turbo Repo
 .turbo
+
+# knot runtime data
+data/
+backend/data/
+*.db
+*.db-shm
+*.db-wal
+
+# Go build output
+/backend/knot
+/backend/knot.exe
+

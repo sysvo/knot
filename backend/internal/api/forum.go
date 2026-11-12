@@ -1,0 +1,700 @@
+package api
+
+import (
+	"errors"
+	"net/http"
+	"regexp"
+	"strings"
+
+	"github.com/sysvo/knot/internal/model"
+	"github.com/sysvo/knot/internal/store"
+)
+
+// mentionRE finds @username references in Markdown.
+var mentionRE = regexp.MustCompile(`@([a-zA-Z0-9][a-zA-Z0-9_-]{2,31})`)
+
+// canEdit reports whether u may modify content authored by authorID.
+func canEdit(u *model.User, authorID *int64) bool {
+	if u == nil || authorID == nil {
+		return false
+	}
+	return u.CanModerate() || *authorID == u.ID
+}
+
+// ---- boards ----
+
+func (s *Server) handleListBoards(w http.ResponseWriter, r *http.Request) {
+	boards, err := s.store.ListBoards(r.Context())
+	if err != nil {
+		writeStoreError(s, w, r, err, "boards not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"boards": boards})
+}
+
+func (s *Server) handleGetBoard(w http.ResponseWriter, r *http.Request) {
+	board, err := s.store.BoardBySlug(r.Context(), r.PathValue("slug"))
+	if err != nil {
+		writeStoreError(s, w, r, err, "no such board")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"board": board})
+}
+
+func (s *Server) handleListBoardThreads(w http.ResponseWriter, r *http.Request) {
+	board, err := s.store.BoardBySlug(r.Context(), r.PathValue("slug"))
+	if err != nil {
+		writeStoreError(s, w, r, err, "no such board")
+		return
+	}
+	page, perPage, offset := pageParams(r, 20, 100)
+	sort := store.ThreadSort(r.URL.Query().Get("sort"))
+
+	threads, total, err := s.store.ListThreads(r.Context(), &board.ID, sort, perPage, offset, false)
+	if err != nil {
+		writeStoreError(s, w, r, err, "threads not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"board":   board,
+		"threads": threads,
+		"page":    model.Page{Number: page, PerPage: perPage, Total: total, HasNext: offset+len(threads) < int(total)},
+	})
+}
+
+// ---- threads ----
+
+func (s *Server) handleListThreads(w http.ResponseWriter, r *http.Request) {
+	page, perPage, offset := pageParams(r, 20, 100)
+	sort := store.ThreadSort(r.URL.Query().Get("sort"))
+
+	threads, total, err := s.store.ListThreads(r.Context(), nil, sort, perPage, offset, false)
+	if err != nil {
+		writeStoreError(s, w, r, err, "threads not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"threads": threads,
+		"page":    model.Page{Number: page, PerPage: perPage, Total: total, HasNext: offset+len(threads) < int(total)},
+	})
+}
+
+func (s *Server) handleGetThread(w http.ResponseWriter, r *http.Request) {
+	id, ok := idParam(r, "id")
+	if !ok {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid thread id")
+		return
+	}
+
+	thread, err := s.store.ThreadByID(r.Context(), id)
+	if err != nil {
+		writeStoreError(s, w, r, err, "no such thread")
+		return
+	}
+	if thread.Deleted && !currentUser(r).CanModerate() {
+		writeError(w, http.StatusNotFound, "not_found", "no such thread")
+		return
+	}
+
+	var viewerID int64
+	if u := currentUser(r); u != nil {
+		viewerID = u.ID
+	}
+
+	page, perPage, offset := pageParams(r, 20, 100)
+	posts, total, err := s.store.ListPosts(r.Context(), id, viewerID, perPage, offset)
+	if err != nil {
+		writeStoreError(s, w, r, err, "posts not found")
+		return
+	}
+
+	// Only count a read once the thread actually rendered.
+	_ = s.store.IncrementThreadViews(r.Context(), id)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"thread": thread,
+		"posts":  posts,
+		"page":   model.Page{Number: page, PerPage: perPage, Total: total, HasNext: offset+len(posts) < int(total)},
+	})
+}
+
+func (s *Server) handleGetPost(w http.ResponseWriter, r *http.Request) {
+	id, ok := idParam(r, "id")
+	if !ok {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid post id")
+		return
+	}
+	var viewerID int64
+	if u := currentUser(r); u != nil {
+		viewerID = u.ID
+	}
+	post, err := s.store.PostByID(r.Context(), id, viewerID)
+	if err != nil {
+		writeStoreError(s, w, r, err, "no such post")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"post": post})
+}
+
+type threadRequest struct {
+	Title   string `json:"title"`
+	Body    string `json:"body"`
+	BoardID int64  `json:"board_id"`
+}
+
+const (
+	maxTitleLength = 140
+	maxBodyLength  = 20000
+)
+
+func (s *Server) handleCreateThread(w http.ResponseWriter, r *http.Request) {
+	u := currentUser(r)
+	if u == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "sign in to start a thread")
+		return
+	}
+	if !s.allow(w, r, "thread", 10, 5) {
+		return
+	}
+
+	board, err := s.store.BoardBySlug(r.Context(), r.PathValue("slug"))
+	if err != nil {
+		writeStoreError(s, w, r, err, "no such board")
+		return
+	}
+
+	var req threadRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	title, body, ok := s.validateContent(w, req.Title, req.Body)
+	if !ok {
+		return
+	}
+
+	html := s.md.Render(body)
+	excerpt := s.md.Excerpt(body)
+
+	thread, err := s.store.CreateThread(r.Context(), board.ID, u.ID, title, excerpt, body, html)
+	if err != nil {
+		writeStoreError(s, w, r, err, "could not create the thread")
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"thread": thread})
+}
+
+func (s *Server) handleUpdateThread(w http.ResponseWriter, r *http.Request) {
+	u := currentUser(r)
+	if u == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "sign in first")
+		return
+	}
+	id, ok := idParam(r, "id")
+	if !ok {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid thread id")
+		return
+	}
+	thread, err := s.store.ThreadByID(r.Context(), id)
+	if err != nil {
+		writeStoreError(s, w, r, err, "no such thread")
+		return
+	}
+	if !canEdit(u, authorID(thread.Author)) {
+		writeError(w, http.StatusForbidden, "forbidden", "you cannot edit this thread")
+		return
+	}
+
+	var req threadRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	title := strings.TrimSpace(req.Title)
+	if n := len([]rune(title)); n < 3 || n > maxTitleLength {
+		writeError(w, http.StatusBadRequest, "invalid_title", "title must be between 3 and 140 characters")
+		return
+	}
+	if err := s.store.UpdateThreadTitle(r.Context(), id, title); err != nil {
+		writeStoreError(s, w, r, err, "could not update the thread")
+		return
+	}
+	_ = s.store.Log(r.Context(), u.ID, "thread.retitle", "thread", id, title)
+
+	updated, err := s.store.ThreadByID(r.Context(), id)
+	if err != nil {
+		writeStoreError(s, w, r, err, "no such thread")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"thread": updated})
+}
+
+func (s *Server) handleDeleteThread(w http.ResponseWriter, r *http.Request) {
+	u := currentUser(r)
+	if u == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "sign in first")
+		return
+	}
+	id, ok := idParam(r, "id")
+	if !ok {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid thread id")
+		return
+	}
+	thread, err := s.store.ThreadByID(r.Context(), id)
+	if err != nil {
+		writeStoreError(s, w, r, err, "no such thread")
+		return
+	}
+	if !canEdit(u, authorID(thread.Author)) {
+		writeError(w, http.StatusForbidden, "forbidden", "you cannot delete this thread")
+		return
+	}
+	if err := s.store.SoftDeleteThread(r.Context(), id, u.ID); err != nil {
+		writeStoreError(s, w, r, err, "could not delete the thread")
+		return
+	}
+	_ = s.store.Log(r.Context(), u.ID, "thread.delete", "thread", id, thread.Title)
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (s *Server) handleTogglePin(w http.ResponseWriter, r *http.Request) {
+	if s.mustModerator(w, r) == nil {
+		return
+	}
+	s.toggleThreadFlag(w, r, "pin")
+}
+
+func (s *Server) handleToggleLock(w http.ResponseWriter, r *http.Request) {
+	if s.mustModerator(w, r) == nil {
+		return
+	}
+	s.toggleThreadFlag(w, r, "lock")
+}
+
+func (s *Server) toggleThreadFlag(w http.ResponseWriter, r *http.Request, flag string) {
+	u := currentUser(r)
+	id, ok := idParam(r, "id")
+	if !ok {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid thread id")
+		return
+	}
+	thread, err := s.store.ThreadByID(r.Context(), id)
+	if err != nil {
+		writeStoreError(s, w, r, err, "no such thread")
+		return
+	}
+
+	pinned, locked := thread.Pinned, thread.Locked
+	if flag == "pin" {
+		pinned = !pinned
+	} else {
+		locked = !locked
+	}
+	if err := s.store.SetThreadFlags(r.Context(), id, pinned, locked); err != nil {
+		writeStoreError(s, w, r, err, "could not update the thread")
+		return
+	}
+	_ = s.store.Log(r.Context(), u.ID, "thread."+flag, "thread", id, "")
+
+	updated, err := s.store.ThreadByID(r.Context(), id)
+	if err != nil {
+		writeStoreError(s, w, r, err, "no such thread")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"thread": updated})
+}
+
+// ---- posts ----
+
+type postRequest struct {
+	Body string `json:"body"`
+}
+
+func (s *Server) handleCreatePost(w http.ResponseWriter, r *http.Request) {
+	u := currentUser(r)
+	if u == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "sign in to reply")
+		return
+	}
+	if !s.allow(w, r, "post", 20, 8) {
+		return
+	}
+	id, ok := idParam(r, "id")
+	if !ok {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid thread id")
+		return
+	}
+	thread, err := s.store.ThreadByID(r.Context(), id)
+	if err != nil {
+		writeStoreError(s, w, r, err, "no such thread")
+		return
+	}
+	if thread.Deleted {
+		writeError(w, http.StatusNotFound, "not_found", "no such thread")
+		return
+	}
+	if thread.Locked && !u.CanModerate() {
+		writeError(w, http.StatusForbidden, "locked", "this thread is locked")
+		return
+	}
+
+	var req postRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	_, body, ok := s.validateContent(w, "x", req.Body)
+	if !ok {
+		return
+	}
+
+	post, err := s.store.CreatePost(r.Context(), id, u.ID, body, s.md.Render(body))
+	if err != nil {
+		writeStoreError(s, w, r, err, "could not post the reply")
+		return
+	}
+
+	// Notify the thread author about the reply, then anyone mentioned.
+	if thread.Author != nil {
+		_ = s.store.Notify(r.Context(), thread.Author.ID, u.ID, "reply", thread.ID, post.ID)
+	}
+	s.notifyMentions(r, u, body, thread.ID, post.ID)
+
+	writeJSON(w, http.StatusCreated, map[string]any{"post": post})
+}
+
+// notifyMentions resolves @username references to accounts and notifies them.
+func (s *Server) notifyMentions(r *http.Request, actor *model.User, body string, threadID, postID int64) {
+	seen := map[string]bool{}
+	matches := mentionRE.FindAllStringSubmatch(body, 10)
+	for _, m := range matches {
+		name := m[1]
+		lower := strings.ToLower(name)
+		if seen[lower] {
+			continue
+		}
+		seen[lower] = true
+
+		acct, err := s.store.AccountByUsername(r.Context(), name)
+		if err != nil {
+			continue // unknown handle: silently ignored
+		}
+		if acct.User.Status != model.StatusActive {
+			continue
+		}
+		_ = s.store.Notify(r.Context(), acct.User.ID, actor.ID, "mention", threadID, postID)
+	}
+}
+
+func (s *Server) handleUpdatePost(w http.ResponseWriter, r *http.Request) {
+	u := currentUser(r)
+	if u == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "sign in first")
+		return
+	}
+	id, ok := idParam(r, "id")
+	if !ok {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid post id")
+		return
+	}
+	post, err := s.store.PostByID(r.Context(), id, u.ID)
+	if err != nil {
+		writeStoreError(s, w, r, err, "no such post")
+		return
+	}
+	if post.Deleted {
+		writeError(w, http.StatusNotFound, "not_found", "no such post")
+		return
+	}
+	if !canEdit(u, authorID(post.Author)) {
+		writeError(w, http.StatusForbidden, "forbidden", "you cannot edit this post")
+		return
+	}
+
+	var req postRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	_, body, ok := s.validateContent(w, "x", req.Body)
+	if !ok {
+		return
+	}
+	if err := s.store.UpdatePost(r.Context(), id, body, s.md.Render(body)); err != nil {
+		writeStoreError(s, w, r, err, "could not update the post")
+		return
+	}
+
+	updated, err := s.store.PostByID(r.Context(), id, u.ID)
+	if err != nil {
+		writeStoreError(s, w, r, err, "no such post")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"post": updated})
+}
+
+func (s *Server) handleDeletePost(w http.ResponseWriter, r *http.Request) {
+	u := currentUser(r)
+	if u == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "sign in first")
+		return
+	}
+	id, ok := idParam(r, "id")
+	if !ok {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid post id")
+		return
+	}
+	post, err := s.store.PostByID(r.Context(), id, u.ID)
+	if err != nil {
+		writeStoreError(s, w, r, err, "no such post")
+		return
+	}
+	if !canEdit(u, authorID(post.Author)) {
+		writeError(w, http.StatusForbidden, "forbidden", "you cannot delete this post")
+		return
+	}
+	if err := s.store.SoftDeletePost(r.Context(), id, u.ID); err != nil {
+		writeStoreError(s, w, r, err, "could not delete the post")
+		return
+	}
+	_ = s.store.Log(r.Context(), u.ID, "post.delete", "post", id, "")
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+type voteRequest struct {
+	Value int `json:"value"`
+}
+
+func (s *Server) handleVote(w http.ResponseWriter, r *http.Request) {
+	u := currentUser(r)
+	if u == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "sign in to vote")
+		return
+	}
+	if !s.allow(w, r, "vote", 60, 30) {
+		return
+	}
+	id, ok := idParam(r, "id")
+	if !ok {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid post id")
+		return
+	}
+	var req voteRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if req.Value < -1 || req.Value > 1 {
+		writeError(w, http.StatusBadRequest, "invalid", "vote must be 1, -1 or 0")
+		return
+	}
+
+	score, myVote, err := s.store.VotePost(r.Context(), id, u.ID, req.Value)
+	if err != nil {
+		writeStoreError(s, w, r, err, "no such post")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"score": score, "my_vote": myVote})
+}
+
+type reportRequest struct {
+	Reason  string `json:"reason"`
+	Details string `json:"details"`
+}
+
+func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
+	u := currentUser(r)
+	if u == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "sign in to report a post")
+		return
+	}
+	if !s.allow(w, r, "report", 10, 5) {
+		return
+	}
+	id, ok := idParam(r, "id")
+	if !ok {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid post id")
+		return
+	}
+	post, err := s.store.PostByID(r.Context(), id, u.ID)
+	if err != nil {
+		writeStoreError(s, w, r, err, "no such post")
+		return
+	}
+
+	var req reportRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	reason := strings.TrimSpace(req.Reason)
+	if reason == "" {
+		writeError(w, http.StatusBadRequest, "invalid", "choose a reason for the report")
+		return
+	}
+	if len(reason) > 60 {
+		reason = reason[:60]
+	}
+	details := strings.TrimSpace(req.Details)
+	if len([]rune(details)) > 1000 {
+		writeError(w, http.StatusBadRequest, "invalid", "report details are too long")
+		return
+	}
+
+	reportID, err := s.store.CreateReport(r.Context(), u.ID, &id, &post.ThreadID, reason, details)
+	if err != nil {
+		writeStoreError(s, w, r, err, "could not file the report")
+		return
+	}
+	_ = s.store.Log(r.Context(), u.ID, "report.create", "post", id, reason)
+	writeJSON(w, http.StatusCreated, map[string]any{"id": reportID})
+}
+
+// ---- search and profiles ----
+
+func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	board := strings.TrimSpace(r.URL.Query().Get("board"))
+	limit := intQuery(r, "limit", 30)
+	if limit < 1 || limit > 100 {
+		limit = 30
+	}
+	if q == "" {
+		writeJSON(w, http.StatusOK, map[string]any{"query": "", "results": []model.SearchHit{}})
+		return
+	}
+
+	hits, err := s.store.Search(r.Context(), q, board, limit)
+	if err != nil {
+		s.log.Error("search", "err", err, "q", q)
+		writeError(w, http.StatusInternalServerError, "internal", "search failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"query": q, "results": hits})
+}
+
+func (s *Server) handleGetUser(w http.ResponseWriter, r *http.Request) {
+	acct, err := s.store.AccountByUsername(r.Context(), r.PathValue("username"))
+	if err != nil {
+		writeStoreError(s, w, r, err, "no such user")
+		return
+	}
+	posts, err := s.store.UserPostCount(r.Context(), acct.User.ID)
+	if err != nil {
+		writeStoreError(s, w, r, err, "no such user")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"user":       acct.User,
+		"post_count": posts,
+	})
+}
+
+func (s *Server) handleUserPosts(w http.ResponseWriter, r *http.Request) {
+	acct, err := s.store.AccountByUsername(r.Context(), r.PathValue("username"))
+	if err != nil {
+		writeStoreError(s, w, r, err, "no such user")
+		return
+	}
+	limit := intQuery(r, "limit", 20)
+	if limit < 1 || limit > 50 {
+		limit = 20
+	}
+	posts, err := s.store.RecentPostsByUser(r.Context(), acct.User.ID, limit)
+	if err != nil {
+		writeStoreError(s, w, r, err, "no such user")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"posts": posts})
+}
+
+// ---- notifications ----
+
+func (s *Server) handleListNotifications(w http.ResponseWriter, r *http.Request) {
+	u := currentUser(r)
+	if u == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "sign in first")
+		return
+	}
+	limit := intQuery(r, "limit", 40)
+	if limit < 1 || limit > 100 {
+		limit = 40
+	}
+	items, unread, err := s.store.ListNotifications(r.Context(), u.ID, limit)
+	if err != nil {
+		writeStoreError(s, w, r, err, "could not load notifications")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"notifications": items, "unread": unread})
+}
+
+func (s *Server) handleReadNotifications(w http.ResponseWriter, r *http.Request) {
+	u := currentUser(r)
+	if u == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "sign in first")
+		return
+	}
+	if err := s.store.MarkNotificationsRead(r.Context(), u.ID, false); err != nil {
+		writeStoreError(s, w, r, err, "could not update notifications")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (s *Server) handleDeleteNotifications(w http.ResponseWriter, r *http.Request) {
+	u := currentUser(r)
+	if u == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "sign in first")
+		return
+	}
+	if err := s.store.MarkNotificationsRead(r.Context(), u.ID, true); err != nil {
+		writeStoreError(s, w, r, err, "could not clear notifications")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// ---- helpers ----
+
+// authorID safely converts an embedded author into a pointer.
+func authorID(u *model.User) *int64 {
+	if u == nil {
+		return nil
+	}
+	id := u.ID
+	return &id
+}
+
+// validateContent normalises and checks a title/body pair. It writes the error
+// response itself and reports whether the caller may continue.
+func (s *Server) validateContent(w http.ResponseWriter, title, body string) (string, string, bool) {
+	title = strings.TrimSpace(title)
+	body = strings.TrimSpace(body)
+
+	if title != "x" { // "x" is the sentinel used for post-only requests
+		if n := len([]rune(title)); n < 3 || n > maxTitleLength {
+			writeError(w, http.StatusBadRequest, "invalid_title", "title must be between 3 and 140 characters")
+			return "", "", false
+		}
+	}
+	if body == "" {
+		writeError(w, http.StatusBadRequest, "empty_post", "the post is empty")
+		return "", "", false
+	}
+	if len([]rune(body)) > maxBodyLength {
+		writeError(w, http.StatusBadRequest, "too_long", "the post is too long")
+		return "", "", false
+	}
+	return title, body, true
+}
+
+// mustModerator writes a 403 and returns nil unless the caller moderates.
+func (s *Server) mustModerator(w http.ResponseWriter, r *http.Request) *model.User {
+	u := currentUser(r)
+	if u == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "sign in first")
+		return nil
+	}
+	if !u.CanModerate() {
+		writeError(w, http.StatusForbidden, "forbidden", "moderators only")
+		return nil
+	}
+	return u
+}
+
+// storeErrIs helps handlers branch on store failures.
+func storeErrIs(err, target error) bool { return errors.Is(err, target) }
