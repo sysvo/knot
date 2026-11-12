@@ -1,75 +1,109 @@
-// Package mail sends transactional e-mail. When no SMTP host is configured the
-// message is written to the log instead, so development needs no mail server.
+// Package mail sends transactional e-mail.
+//
+// Nothing here talks to the database or the HTTP layer: the caller supplies the
+// SMTP configuration for each send, so changing the relay in the admin panel
+// takes effect on the next message without a restart.
 package mail
 
 import (
 	"context"
 	"crypto/tls"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/smtp"
 	"strings"
 	"time"
-
-	"github.com/sysvo/knot/internal/config"
 )
+
+// ErrNotConfigured is returned when no SMTP host is set.
+var ErrNotConfigured = errors.New("no SMTP server configured")
+
+// Config describes an SMTP relay.
+type Config struct {
+	Host string
+	Port int
+	User string
+	Pass string
+	From string
+}
+
+// Enabled reports whether this configuration can send anything.
+func (c Config) Enabled() bool { return strings.TrimSpace(c.Host) != "" }
+
+func (c Config) port() int {
+	if c.Port <= 0 || c.Port > 65535 {
+		return 587
+	}
+	return c.Port
+}
+
+func (c Config) from() string {
+	if strings.TrimSpace(c.From) != "" {
+		return c.From
+	}
+	return "knot@localhost"
+}
 
 // Mailer sends plain-text messages.
 type Mailer struct {
-	cfg config.SMTP
 	log *slog.Logger
 }
 
-// New builds a Mailer from configuration.
-func New(cfg config.SMTP, log *slog.Logger) *Mailer {
-	return &Mailer{cfg: cfg, log: log}
-}
+// New builds a Mailer.
+func New(log *slog.Logger) *Mailer { return &Mailer{log: log} }
 
-// Functional reports whether real mail will be sent.
-func (m *Mailer) Functional() bool { return m.cfg.Host != "" }
-
-// Send delivers one message. Errors are returned to the caller so that, for
-// example, a failed verification mail can be reported to the user.
-func (m *Mailer) Send(ctx context.Context, to, subject, body string) error {
-	if m.cfg.Host == "" {
-		m.log.Info("mail (not sent, no SMTP configured)", "to", to, "subject", subject, "body", body)
-		return nil
+// Send delivers one message using cfg.
+//
+// Errors are returned with enough detail to be useful in the admin panel: "smtp
+// auth: 535 authentication failed" is the sentence that fixes the problem, and
+// swallowing it is how a self-hoster spends an evening guessing.
+func (m *Mailer) Send(ctx context.Context, cfg Config, to, subject, body string) error {
+	if !cfg.Enabled() {
+		return ErrNotConfigured
 	}
 
-	addr := net.JoinHostPort(m.cfg.Host, fmt.Sprint(m.cfg.Port))
-	msg := buildMessage(m.cfg.From, to, subject, body)
+	addr := net.JoinHostPort(cfg.Host, fmt.Sprint(cfg.port()))
+	msg := buildMessage(cfg.from(), to, subject, body)
 
 	dialer := &net.Dialer{Timeout: 10 * time.Second}
 	conn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
-		return fmt.Errorf("smtp dial: %w", err)
+		return fmt.Errorf("connect to %s: %w", addr, err)
 	}
 	defer conn.Close()
 
-	client, err := smtp.NewClient(conn, m.cfg.Host)
+	// Give up if the far end stalls mid-conversation.
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = conn.SetDeadline(deadline)
+	} else {
+		_ = conn.SetDeadline(time.Now().Add(30 * time.Second))
+	}
+
+	client, err := smtp.NewClient(conn, cfg.Host)
 	if err != nil {
 		return fmt.Errorf("smtp handshake: %w", err)
 	}
 	defer client.Close()
 
 	if ok, _ := client.Extension("STARTTLS"); ok {
-		if err := client.StartTLS(&tls.Config{ServerName: m.cfg.Host, MinVersion: tls.VersionTLS12}); err != nil {
+		if err := client.StartTLS(&tls.Config{ServerName: cfg.Host, MinVersion: tls.VersionTLS12}); err != nil {
 			return fmt.Errorf("smtp starttls: %w", err)
 		}
 	}
-	if m.cfg.User != "" {
-		auth := smtp.PlainAuth("", m.cfg.User, m.cfg.Pass, m.cfg.Host)
+	if cfg.User != "" {
+		auth := smtp.PlainAuth("", cfg.User, cfg.Pass, cfg.Host)
 		if err := client.Auth(auth); err != nil {
 			return fmt.Errorf("smtp auth: %w", err)
 		}
 	}
-	if err := client.Mail(m.cfg.From); err != nil {
-		return fmt.Errorf("smtp from: %w", err)
+	if err := client.Mail(cfg.from()); err != nil {
+		return fmt.Errorf("smtp sender rejected: %w", err)
 	}
 	if err := client.Rcpt(to); err != nil {
-		return fmt.Errorf("smtp rcpt: %w", err)
+		return fmt.Errorf("smtp recipient rejected: %w", err)
 	}
 	w, err := client.Data()
 	if err != nil {
@@ -79,7 +113,7 @@ func (m *Mailer) Send(ctx context.Context, to, subject, body string) error {
 		return fmt.Errorf("smtp write: %w", err)
 	}
 	if err := w.Close(); err != nil {
-		return fmt.Errorf("smtp close: %w", err)
+		return fmt.Errorf("smtp finish: %w", err)
 	}
 	return client.Quit()
 }

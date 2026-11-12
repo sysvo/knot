@@ -70,7 +70,7 @@ export default function SiteHeader({
           />
         </form>
 
-        <div className="row" style={{ gap: "0.35rem" }}>
+        <div className="header-actions">
           <ThemeToggle />
 
           {user ? (

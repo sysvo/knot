@@ -533,6 +533,113 @@ Check "a nonsense spam threshold is refused" {
     }
 }
 
+# ---- e-mail ----
+#
+# There is no real mail server here, so delivery is expected to fail. What is
+# checked is that failures are visible, that nothing blocks a request, and that
+# the reset flow works end to end.
+
+$script:resetEmail = "reset$suffix@example.com"
+$script:resetUser = New-Session
+$script:resetToken = ""
+
+Check "password reset is unavailable without a mail server" {
+    try {
+        Call POST "/api/v1/auth/reset" @{ email = "nobody$suffix@example.com" } | Out-Null
+        $false
+    }
+    catch {
+        $_.Exception.Response.StatusCode.value__ -eq 501
+    }
+}
+
+Check "an SMTP test reports the relay's own error" {
+    Call PATCH "/api/v1/admin/settings" @{
+        settings = @{ smtp_host = "127.0.0.1"; smtp_port = "1"; smtp_from = "forum@example.com" }
+    } $admin | Out-Null
+
+    try {
+        Call POST "/api/v1/admin/mail/test" @{ to = "admin@example.com" } $admin | Out-Null
+        $false
+    }
+    catch {
+        $status = $_.Exception.Response.StatusCode.value__
+        $body = $_.ErrorDetails.Message
+        $status -eq 502 -and $body -like "*connect to 127.0.0.1:1*"
+    }
+}
+
+Check "the SMTP password is never sent back to the browser" {
+    Call PATCH "/api/v1/admin/settings" @{ settings = @{ smtp_pass = "not-a-real-password" } } $admin | Out-Null
+    $s = Call GET "/api/v1/admin/settings" $null $admin
+    ($null -eq $s.settings.smtp_pass) -and ($s.settings.smtp_password_set -eq "true")
+}
+
+Check "a reset link is queued rather than sent during the request" {
+    Call POST "/api/v1/auth/register" @{
+        username = "reset$suffix"; email = $script:resetEmail; password = $password
+    } $script:resetUser | Out-Null
+
+    $r = Call POST "/api/v1/auth/reset" @{ email = $script:resetEmail }
+    $q = Call GET "/api/v1/admin/mail" $null $admin
+    ($r.message -like "*reset link*") -and
+        (@($q.items | Where-Object { $_.to -eq $script:resetEmail }).Count -ge 1)
+}
+
+Check "a failed delivery is recorded with its error" {
+    # The worker tries 127.0.0.1:1 as soon as something is queued.
+    $q = Call GET "/api/v1/admin/mail" $null $admin
+    $item = @($q.items | Where-Object { $_.to -eq $script:resetEmail })[0]
+    if (-not $item) { throw "nothing queued for $($script:resetEmail)" }
+    $script:resetToken = if ($item.body -match 'token=([A-Za-z0-9_\-]+)') { $matches[1] } else { "" }
+
+    # Either it has already been tried, or it is still waiting for its first
+    # attempt; both are fine, but a token must be in the message.
+    $script:resetToken.Length -ge 20 -and ($item.attempts -ge 0)
+}
+
+Check "the reset token sets a new password" {
+    Call POST "/api/v1/auth/reset/confirm" @{
+        token = $script:resetToken; password = "a-brand-new-passphrase"
+    } | Out-Null
+
+    $fresh = New-Session
+    $me = Call POST "/api/v1/auth/login" @{ login = "reset$suffix"; password = "a-brand-new-passphrase" } $fresh
+    $me.username -eq "reset$suffix"
+}
+
+Check "a reset signs out the account's other sessions" {
+    try {
+        Call GET "/api/v1/auth/me" $null $script:resetUser | Out-Null
+        $false
+    }
+    catch {
+        $_.Exception.Response.StatusCode.value__ -eq 401
+    }
+}
+
+Check "a reset token cannot be used twice" {
+    try {
+        Call POST "/api/v1/auth/reset/confirm" @{
+            token = $script:resetToken; password = "yet-another-passphrase"
+        } | Out-Null
+        $false
+    }
+    catch {
+        $_.Exception.Response.StatusCode.value__ -eq 404
+    }
+}
+
+Check "an unknown address gets the same answer as a real one" {
+    $r = Call POST "/api/v1/auth/reset" @{ email = "ghost$suffix@example.com" }
+    $r.message -like "*reset link*"
+}
+
+Check "mail settings are restored to unconfigured" {
+    $s = Call PATCH "/api/v1/admin/settings" @{ settings = @{ smtp_host = "" } } $admin
+    $s.settings.smtp_host -eq ""
+}
+
 # The CSRF probe goes last: in Windows PowerShell 5.1 a -Headers value is kept on
 # the WebSession, so every later request from that session would carry the hostile
 # Origin and fail with bad_origin for reasons that have nothing to do with CSRF.

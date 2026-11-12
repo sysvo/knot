@@ -86,7 +86,7 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 		"require_email_verification": strings.EqualFold(valueOr(all, settingRequireVerify, "false"), "true"),
 		"registration_note":          valueOr(all, settingRegistrationNote, ""),
 		"providers":                  providers,
-		"mail_enabled":               s.mail.Functional(),
+		"mail_enabled":               s.smtpConfig(r.Context()).Enabled(),
 		"max_upload_bytes":           s.cfg.MaxUploadSize,
 		"version":                    Version,
 		"user":                       self,
@@ -325,7 +325,7 @@ func (s *Server) handleMagicRequest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_email", err.Error())
 		return
 	}
-	if !s.mail.Functional() {
+	if !s.smtpConfig(r.Context()).Enabled() {
 		writeError(w, http.StatusNotImplemented, "mail_unavailable",
 			"this instance has no mail server configured, so magic links are unavailable")
 		return
@@ -349,9 +349,7 @@ func (s *Server) handleMagicRequest(w http.ResponseWriter, r *http.Request) {
 				link := s.cfg.PublicURL + "/auth/magic?token=" + raw
 				body := "Use this link to sign in to " + s.getSetting(r.Context(), settingSiteName, "knot") + ":\n\n" +
 					link + "\n\nThe link expires in 30 minutes and can be used once.\n"
-				if mailErr := s.mail.Send(r.Context(), email, "Sign in to "+s.getSetting(r.Context(), settingSiteName, "knot"), body); mailErr != nil {
-					s.log.Error("send magic link", "err", mailErr)
-				}
+				s.queueMailTo(r.Context(), email, "Sign in to "+s.getSetting(r.Context(), settingSiteName, "knot"), body)
 			}
 		}
 	}
@@ -435,7 +433,7 @@ func (s *Server) handleVerifyEmail(w http.ResponseWriter, r *http.Request) {
 
 // sendVerificationMail issues a verification token and mails it.
 func (s *Server) sendVerificationMail(ctx context.Context, acct *store.Account) {
-	if acct.Email == "" || !s.mail.Functional() {
+	if acct.Email == "" || !s.smtpConfig(ctx).Enabled() {
 		return
 	}
 	raw, hash, err := auth.NewToken()
@@ -451,9 +449,7 @@ func (s *Server) sendVerificationMail(ctx context.Context, acct *store.Account) 
 	site := s.getSetting(ctx, settingSiteName, "knot")
 	link := s.cfg.PublicURL + "/auth/verify?token=" + raw
 	body := "Confirm your e-mail address for " + site + ":\n\n" + link + "\n\nThe link expires in 48 hours.\n"
-	if err := s.mail.Send(ctx, acct.Email, "Confirm your e-mail for "+site, body); err != nil {
-		s.log.Error("send verify mail", "err", err)
-	}
+	s.queueMailTo(ctx, acct.Email, "Confirm your e-mail for "+site, body)
 }
 
 // ---- own account ----

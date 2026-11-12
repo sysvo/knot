@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/sysvo/knot/internal/mail"
 )
 
 // Provider describes one OAuth login provider.
@@ -25,16 +27,6 @@ type Provider struct {
 	Scopes       []string
 }
 
-// SMTP holds outgoing mail settings. When Host is empty, mail is written to the
-// log instead of being sent, which is what you want in development.
-type SMTP struct {
-	Host string
-	Port int
-	User string
-	Pass string
-	From string
-}
-
 // Config is the fully resolved configuration for one process.
 type Config struct {
 	Addr          string
@@ -45,8 +37,12 @@ type Config struct {
 	TrustProxy    bool
 	SessionTTL    time.Duration
 	MaxUploadSize int64
-	SMTP          SMTP
-	Providers     []Provider
+
+	// SMTP is only the starting point: the admin panel stores its own copy in the
+	// database, which wins over this when it is set. Env variables are here so
+	// that a container can be configured without opening a browser.
+	SMTP      mail.Config
+	Providers []Provider
 
 	// BootstrapAdmin creates an admin account on first start when it does not
 	// exist yet. Ignored once the account exists.
@@ -67,7 +63,7 @@ func Load() (*Config, error) {
 		TrustProxy:    envBool("KNOT_TRUST_PROXY", true),
 		SessionTTL:    envDuration("KNOT_SESSION_TTL", 30*24*time.Hour),
 		MaxUploadSize: int64(envInt("KNOT_MAX_UPLOAD_MB", 8)) << 20,
-		SMTP: SMTP{
+		SMTP: mail.Config{
 			Host: env("KNOT_SMTP_HOST", ""),
 			Port: envInt("KNOT_SMTP_PORT", 587),
 			User: env("KNOT_SMTP_USER", ""),
@@ -145,7 +141,9 @@ func (c *Config) LogSummary(log *slog.Logger) {
 	for _, p := range c.Providers {
 		names = append(names, p.Name)
 	}
-	mail := "logged to stdout"
+	// Mail settings can also be changed in the admin panel, which wins over
+	// these; the environment only seeds a fresh install.
+	mail := "disabled"
 	if c.SMTP.Host != "" {
 		mail = c.SMTP.Host
 	}

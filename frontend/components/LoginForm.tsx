@@ -137,17 +137,22 @@ export default function LoginForm({
       )}
 
       {mailEnabled && (
-        <button
-          type="button"
-          className="link-button"
-          onClick={() => {
-            setMode(mode === "password" ? "magic" : "password");
-            setError(null);
-            setNotice(null);
-          }}
-        >
-          {mode === "password" ? "Sign in with an e-mail link instead" : "Use a password instead"}
-        </button>
+        <div className="row" style={{ justifyContent: "space-between" }}>
+          <button
+            type="button"
+            className="link-button"
+            onClick={() => {
+              setMode(mode === "password" ? "magic" : "password");
+              setError(null);
+              setNotice(null);
+            }}
+          >
+            {mode === "password" ? "Sign in with an e-mail link instead" : "Use a password instead"}
+          </button>
+          <Link href="/forgot" className="small">
+            Forgot your password?
+          </Link>
+        </div>
       )}
 
       {providers.length > 0 && (

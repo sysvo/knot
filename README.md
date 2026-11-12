@@ -10,7 +10,9 @@ about a minute.
 - **Markdown** written by readers, rendered and sanitised on the server once, at
   write time
 - **Accounts** with argon2id passwords, opaque database-backed sessions, magic
-  links, and optional GitHub or Discord sign-in
+  links, password reset by e-mail, and optional GitHub or Discord sign-in
+- **E-mail** configured in the admin panel with a test button, delivered through
+  a queue that retries and shows you what failed
 - **Full-text search** over every post, using SQLite's FTS5
 - **Votes, reports and a moderation queue**, with an audit log of who did what
 - **Spam defence** that does not get in the way: new accounts cannot post links,
@@ -70,7 +72,7 @@ Every value has a working default. Nothing is required to run locally.
 | `KNOT_MAX_UPLOAD_MB` | `8` | Largest accepted image. |
 | `KNOT_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error`. |
 | `KNOT_LOG_JSON` | `false` | Structured logs, for shipping to somewhere. |
-| `KNOT_SMTP_HOST` / `_PORT` / `_USER` / `_PASS` / `_FROM` | unset | Outgoing mail. Without a host, mail is written to the log. |
+| `KNOT_SMTP_HOST` / `_PORT` / `_USER` / `_PASS` / `_FROM` | unset | Seeds the relay; Administration → Settings overrides it. |
 | `KNOT_GITHUB_CLIENT_ID` / `_SECRET` | unset | Enables GitHub sign-in. |
 | `KNOT_DISCORD_CLIENT_ID` / `_SECRET` | unset | Enables Discord sign-in. |
 | `KNOT_ADMIN_USERNAME` / `_EMAIL` / `_PASSWORD` | unset | Creates the first administrator on an empty database. |

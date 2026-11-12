@@ -220,6 +220,16 @@ kbd {
   height: 3.6rem;
 }
 
+/* The search box grows to fill whatever the brand and the actions leave, and the
+   actions sit against the right edge instead of trailing the search box. */
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-left: auto;
+  flex: none;
+}
+
 .brand {
   display: inline-flex;
   align-items: center;
@@ -269,7 +279,8 @@ kbd {
 
 .search-form {
   flex: 1;
-  max-width: 20rem;
+  min-width: 0;
+  max-width: 24rem;
   position: relative;
 }
 

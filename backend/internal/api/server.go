@@ -32,6 +32,9 @@ type Server struct {
 	mail    *mail.Mailer
 	limiter *ratelimit.Limiter
 	started time.Time
+	// mailKick wakes the delivery worker as soon as something is queued, so a
+	// magic link does not wait for the next poll.
+	mailKick chan struct{}
 }
 
 // New builds a Server.
@@ -41,9 +44,10 @@ func New(cfg *config.Config, st *store.Store, logger *slog.Logger) *Server {
 		store:   st,
 		log:     logger,
 		md:      markdown.New(),
-		mail:    mail.New(cfg.SMTP, logger),
+		mail:    mail.New(logger),
 		limiter: ratelimit.New(),
 		started: time.Now(),
+		mailKick: make(chan struct{}, 1),
 	}
 }
 
@@ -63,6 +67,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/auth/magic", s.handleMagicRequest)
 	mux.HandleFunc("POST /api/v1/auth/magic/consume", s.handleMagicConsume)
 	mux.HandleFunc("POST /api/v1/auth/verify", s.handleVerifyEmail)
+	mux.HandleFunc("POST /api/v1/auth/reset", s.handleResetRequest)
+	mux.HandleFunc("POST /api/v1/auth/reset/confirm", s.handleResetConfirm)
 	mux.HandleFunc("GET /api/v1/auth/oauth/{provider}/start", s.handleOAuthStart)
 	mux.HandleFunc("GET /api/v1/auth/oauth/{provider}/callback", s.handleOAuthCallback)
 
@@ -112,6 +118,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/admin/posts/{id}/approve", s.handleAdminApprovePost)
 	mux.HandleFunc("GET /api/v1/admin/settings", s.handleAdminGetSettings)
 	mux.HandleFunc("PATCH /api/v1/admin/settings", s.handleAdminSetSettings)
+	mux.HandleFunc("POST /api/v1/admin/mail/test", s.handleAdminTestMail)
+	mux.HandleFunc("GET /api/v1/admin/mail", s.handleAdminMail)
+	mux.HandleFunc("POST /api/v1/admin/mail/{id}/retry", s.handleAdminRetryMail)
+	mux.HandleFunc("DELETE /api/v1/admin/mail/{id}", s.handleAdminDeleteMail)
 	mux.HandleFunc("POST /api/v1/admin/boards", s.handleAdminCreateBoard)
 	mux.HandleFunc("PATCH /api/v1/admin/boards/{id}", s.handleAdminUpdateBoard)
 	mux.HandleFunc("DELETE /api/v1/admin/boards/{id}", s.handleAdminDeleteBoard)
@@ -188,6 +198,8 @@ func (s *Server) Bootstrap(ctx context.Context) error {
 
 // background runs periodic housekeeping until ctx is cancelled.
 func (s *Server) background(ctx context.Context) {
+	go s.mailWorker(ctx)
+
 	ticker := time.NewTicker(15 * time.Minute)
 	defer ticker.Stop()
 
@@ -205,6 +217,11 @@ func (s *Server) background(ctx context.Context) {
 func (s *Server) housekeeping(ctx context.Context) {
 	if err := s.store.PurgeExpiredSessions(ctx); err != nil {
 		s.log.Warn("purge expired sessions", "err", err)
+	}
+	// Delivered messages are kept for a week so an admin can confirm what went
+	// out; unsent ones stay until somebody deals with them.
+	if err := s.store.PruneMail(ctx, time.Now().Add(-7*24*time.Hour).Unix()); err != nil {
+		s.log.Warn("prune mail outbox", "err", err)
 	}
 	s.limiter.Purge(time.Hour)
 }

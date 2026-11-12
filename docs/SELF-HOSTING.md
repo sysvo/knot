@@ -113,28 +113,31 @@ docker compose exec api knot role alice admin
 
 ## E-mail
 
-Without SMTP, mail is written to the container log instead of being sent. That
-is deliberate: development needs no mail server, and a self-hoster without mail
-still gets a working forum — except magic links, which the login page will not
-offer.
+**Administration → Settings → E-mail** sets the relay, and it wins over the
+environment, so you can fix a typo without a shell. `KNOT_SMTP_*` still works
+and is used until the panel has a host of its own, which is handy for a
+container configured entirely from `.env`.
 
-To enable it:
+The panel has a **Send test** button, and it shows the relay's own error
+verbatim. That is the point: "535 authentication failed" is the sentence that
+fixes the problem, and a silent failure is how an evening disappears.
 
-```ini
-KNOT_SMTP_HOST=smtp.example.com
-KNOT_SMTP_PORT=587
-KNOT_SMTP_USER=apikey
-KNOT_SMTP_PASS=secret
-KNOT_SMTP_FROM=forum@example.com
-```
+Without a relay, nothing is sent — but nothing is lost either. Magic links,
+e-mail confirmation and password resets are unavailable (the login page stops
+offering them), and anything that would have been sent waits in the **Outbox**
+at the bottom of the settings tab. Configure mail later and it drains.
 
-STARTTLS is used when the server offers it. After changing these, restart the
-API; the login page then offers "sign in with an e-mail link", and turning on
-*Require confirmed e-mail* in the admin settings becomes meaningful.
+Mail that fails is retried with a growing delay — a minute, five, fifteen, an
+hour, six hours, then daily — for eight attempts, after which it is marked as
+given up and shown in the Outbox with its last error. You can retry or discard
+each message there. Delivered messages are kept for a week.
 
-If that setting is on and mail is broken, new accounts cannot post. Check
-`docker compose logs api` for `send verify mail` errors before assuming the
-setting is wrong.
+Two limits worth knowing: STARTTLS on port 587 is supported, implicit TLS on 465
+is not, and the password is stored in the database in plain text. The database
+file is already the thing you back up and protect; treat it accordingly.
+
+If *Require confirmed e-mail* is on and mail is broken, new members cannot post.
+The admin overview says so in red rather than leaving you to work it out.
 
 ## Keeping spam out
 

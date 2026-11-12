@@ -141,6 +141,26 @@ What this does not do: no CAPTCHA, no IP reputation, no machine learning, no
 "shadow banning". Those either require a third-party service, which breaks the
 single-binary promise, or are dishonest to the person on the other side.
 
+## E-mail
+
+Nothing is sent inside a request. A slow or unreachable relay used to make
+sign-up hang for the length of a TCP timeout, and a refused message was logged
+and lost. Every message is written to `mail_outbox` and delivered by a worker:
+
+- the worker wakes on a timer *and* immediately when something is queued, so a
+  magic link does not wait for the next poll
+- failures are retried with growing backoff (a minute, five, fifteen, an hour,
+  six hours, then daily) for eight attempts, then left flagged for an admin
+- the relay configuration is read per send rather than at startup, so changing
+  it in the admin panel takes effect on the next message — no restart
+- unconfigured mail leaves the queue intact instead of burning attempts, and the
+  admin panel shows what is waiting, including the body, because "no mail
+  arrives" is the most common support question a self-hoster has
+
+Password reset uses the same single-use `login_tokens` table as magic links, with
+its own `purpose`, and consumes the token only when the new password is actually
+submitted — a link consumed on open gets eaten by mail scanners.
+
 ## Security posture
 
 - CSRF: `SameSite=Lax` cookies plus an `Origin` check on every unsafe method.

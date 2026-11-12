@@ -7,6 +7,7 @@ import {
   getAdminUsers,
   getAudit,
   getBoards,
+  getMailQueue,
   getMeta,
   getPending,
   getReports,
@@ -95,7 +96,12 @@ export default async function AdminPage({
 }
 
 async function Overview() {
-  const [stats, reports] = await Promise.all([getAdminStats(), getReports()]);
+  const [stats, reports, mail, settings] = await Promise.all([
+    getAdminStats(),
+    getReports(),
+    getMailQueue(),
+    getSettings(),
+  ]);
 
   if (!stats) {
     return <div className="form-error">Could not load the statistics.</div>;
@@ -152,6 +158,36 @@ async function Overview() {
           )}
         </div>
       )}
+
+      {/* A settings combination that silently locks people out belongs on the
+          dashboard, not in a documentation page. */}
+      {settings.require_email_verification === "true" && !mail.configured && (
+        <div className="form-error">
+          <strong>New members cannot post.</strong> “Require confirmed e-mail” is on, but no mail
+          server is configured, so nobody can confirm their address.{" "}
+          <Link href="/admin?tab=settings">Set up e-mail</Link> or turn the requirement off.
+        </div>
+      )}
+
+      {(!mail.configured || mail.failed > 0) && (
+        <div className="panel stack-sm small">
+          {!mail.configured && (
+            <span>
+              <strong>E-mail is not configured.</strong> Magic links and password resets are
+              unavailable{mail.pending > 0 ? `, and ${mail.pending} messages are waiting` : ""}.{" "}
+              <Link href="/admin?tab=settings">Set up SMTP</Link>.
+            </span>
+          )}
+          {mail.failed > 0 && (
+            <span>
+              <strong>
+                {mail.failed} message{mail.failed === 1 ? "" : "s"} could not be delivered.
+              </strong>{" "}
+              <Link href="/admin?tab=settings">See the outbox</Link>.
+            </span>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -177,8 +213,8 @@ async function ReviewTab() {
 }
 
 async function SettingsTab() {
-  const settings = await getSettings();
-  return <SettingsPanel settings={settings} />;
+  const [settings, mail] = await Promise.all([getSettings(), getMailQueue()]);
+  return <SettingsPanel settings={settings} mail={mail} />;
 }
 
 async function AuditTab() {

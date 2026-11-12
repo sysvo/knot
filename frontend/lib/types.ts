@@ -78,6 +78,29 @@ export interface PendingPost {
   board_slug: string;
 }
 
+/** One message in the outgoing mail queue. */
+export interface MailItem {
+  id: number;
+  to: string;
+  subject: string;
+  body: string;
+  attempts: number;
+  last_error: string;
+  created_at: number;
+  next_attempt_at: number;
+  sent: boolean;
+}
+
+/** The state of the outgoing mail queue, as the admin panel sees it. */
+export interface MailQueue {
+  configured: boolean;
+  pending: number;
+  failed: number;
+  /** Attempts after which a message is treated as lost. */
+  max_attempts: number;
+  items: MailItem[];
+}
+
 export interface Notification {
   id: number;
   kind: "reply" | "mention" | string;

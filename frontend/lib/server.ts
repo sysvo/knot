@@ -9,6 +9,7 @@ import type {
   AdminStats,
   AuditEntry,
   Board,
+  MailQueue,
   Meta,
   Notification,
   PageInfo,
@@ -230,6 +231,14 @@ export async function getPending(): Promise<{ threads: Thread[]; posts: PendingP
     return await request<{ threads: Thread[]; posts: PendingPost[] }>("/api/v1/admin/pending");
   } catch {
     return { threads: [], posts: [] };
+  }
+}
+
+export async function getMailQueue(): Promise<MailQueue> {
+  try {
+    return await request<MailQueue>("/api/v1/admin/mail");
+  } catch {
+    return { configured: false, pending: 0, failed: 0, max_attempts: 8, items: [] };
   }
 }
 

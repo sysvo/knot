@@ -204,7 +204,20 @@ func (s *Server) handleAdminGetSettings(w http.ResponseWriter, r *http.Request) 
 		writeStoreError(s, w, r, err, "no settings")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"settings": all})
+	writeJSON(w, http.StatusOK, map[string]any{"settings": redactSettings(all)})
+}
+
+// redactSettings removes the mail password before the map reaches a browser and
+// reports whether one is stored, so the form can say "leave blank to keep it".
+func redactSettings(all map[string]string) map[string]string {
+	out := make(map[string]string, len(all)+1)
+	for k, v := range all {
+		out[k] = v
+	}
+	password := out[settingSMTPPass]
+	delete(out, settingSMTPPass)
+	out["smtp_password_set"] = strconv.FormatBool(strings.TrimSpace(password) != "")
+	return out
 }
 
 // editableSettings is the whitelist of keys the admin API may write.
@@ -220,6 +233,12 @@ var editableSettings = map[string]bool{
 	policy.KeyNewPostsPerDay:    true,
 	policy.KeyApproveFirstPosts: true,
 	policy.KeyBlockedDomains:    true,
+
+	settingSMTPHost: true,
+	settingSMTPPort: true,
+	settingSMTPUser: true,
+	settingSMTPPass: true,
+	settingSMTPFrom: true,
 }
 
 // spamIntegerSettings must parse as non-negative whole numbers.
@@ -264,6 +283,35 @@ func (s *Server) handleAdminSetSettings(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 	}
+
+	// An empty password means "unchanged": the form cannot show the current one,
+	// so clearing the box must not silently wipe the working credential.
+	if pass, present := clean[settingSMTPPass]; present && strings.TrimSpace(pass) == "" {
+		delete(clean, settingSMTPPass)
+	}
+	if host, present := clean[settingSMTPHost]; present {
+		host = strings.TrimSpace(host)
+		if strings.ContainsAny(host, " /\\") || strings.Contains(host, "://") {
+			writeError(w, http.StatusBadRequest, "invalid", "SMTP host is a hostname such as smtp.example.com, without a scheme or path")
+			return
+		}
+		clean[settingSMTPHost] = host
+	}
+	if port, present := clean[settingSMTPPort]; present && strings.TrimSpace(port) != "" {
+		n, err := strconv.Atoi(strings.TrimSpace(port))
+		if err != nil || n < 1 || n > 65535 {
+			writeError(w, http.StatusBadRequest, "invalid", "SMTP port must be a number between 1 and 65535")
+			return
+		}
+		clean[settingSMTPPort] = strconv.Itoa(n)
+	}
+	if from, present := clean[settingSMTPFrom]; present && strings.TrimSpace(from) != "" {
+		if err := auth.ValidateEmail(strings.TrimSpace(from)); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid", "sender address: "+err.Error())
+			return
+		}
+	}
+
 	if err := s.store.SetSettings(r.Context(), clean); err != nil {
 		writeStoreError(s, w, r, err, "could not save settings")
 		return
@@ -275,7 +323,7 @@ func (s *Server) handleAdminSetSettings(w http.ResponseWriter, r *http.Request) 
 		writeStoreError(s, w, r, err, "no settings")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"settings": all})
+	writeJSON(w, http.StatusOK, map[string]any{"settings": redactSettings(all)})
 }
 
 type boardRequest struct {
