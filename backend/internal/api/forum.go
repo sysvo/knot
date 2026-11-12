@@ -1,7 +1,6 @@
 package api
 
 import (
-	"errors"
 	"net/http"
 	"regexp"
 	"strings"
@@ -695,6 +694,3 @@ func (s *Server) mustModerator(w http.ResponseWriter, r *http.Request) *model.Us
 	}
 	return u
 }
-
-// storeErrIs helps handlers branch on store failures.
-func storeErrIs(err, target error) bool { return errors.Is(err, target) }

@@ -66,39 +66,6 @@ func (s *Server) loadSession(next http.Handler) http.Handler {
 	})
 }
 
-// requireAuth rejects anonymous callers.
-func (s *Server) requireAuth(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if currentUser(r) == nil {
-			writeError(w, http.StatusUnauthorized, "unauthorized", "you need to sign in")
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
-// requireModerator rejects members.
-func (s *Server) requireModerator(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if u := currentUser(r); u == nil || !u.CanModerate() {
-			writeError(w, http.StatusForbidden, "forbidden", "moderators only")
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
-// requireAdmin rejects everyone but administrators.
-func (s *Server) requireAdmin(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if u := currentUser(r); u == nil || !u.IsAdmin() {
-			writeError(w, http.StatusForbidden, "forbidden", "administrators only")
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
 // recoverer turns a panic into a logged 500 instead of a dropped connection.
 func (s *Server) recoverer(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

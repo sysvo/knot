@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -184,22 +183,6 @@ func (s *Store) CreateUpload(ctx context.Context, userID int64, storedName, file
 		return nil, err
 	}
 	return &model.Upload{ID: id, Filename: filename, ContentType: contentType, Size: size, URL: "/uploads/" + storedName}, nil
-}
-
-// UploadByStoredName looks up an attachment for serving.
-func (s *Store) UploadByStoredName(ctx context.Context, storedName string) (*model.Upload, error) {
-	var u model.Upload
-	err := s.db.QueryRowContext(ctx,
-		`SELECT id, stored_name, filename, content_type, size FROM uploads WHERE stored_name = ?`, storedName,
-	).Scan(&u.ID, &u.URL, &u.Filename, &u.ContentType, &u.Size)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, ErrNotFound
-	}
-	if err != nil {
-		return nil, err
-	}
-	u.URL = "/uploads/" + u.URL
-	return &u, nil
 }
 
 // ---- Settings ----
