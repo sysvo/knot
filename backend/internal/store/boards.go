@@ -12,11 +12,13 @@ import (
 const boardSelect = `
 	SELECT b.id, b.slug, b.name, b.description, b.position, b.created_at,
 	       (SELECT count(*) FROM threads t
-	         WHERE t.board_id = b.id AND t.deleted_at IS NULL),
+	         WHERE t.board_id = b.id AND t.deleted_at IS NULL AND t.approved_at IS NOT NULL),
 	       (SELECT count(*) FROM posts p JOIN threads t2 ON t2.id = p.thread_id
-	         WHERE t2.board_id = b.id AND p.deleted_at IS NULL AND t2.deleted_at IS NULL),
+	         WHERE t2.board_id = b.id AND p.deleted_at IS NULL
+	           AND p.approved_at IS NOT NULL AND t2.approved_at IS NOT NULL),
 	       COALESCE((SELECT max(t3.last_post_at) FROM threads t3
-	         WHERE t3.board_id = b.id AND t3.deleted_at IS NULL), 0)
+	         WHERE t3.board_id = b.id AND t3.deleted_at IS NULL
+	           AND t3.approved_at IS NOT NULL), 0)
 	FROM boards b`
 
 func scanBoard(row interface{ Scan(...any) error }) (*model.Board, error) {

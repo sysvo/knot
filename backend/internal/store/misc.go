@@ -284,12 +284,13 @@ func (s *Store) ListAudit(ctx context.Context, limit int) ([]AuditEntry, error) 
 
 // AdminStats is the summary shown at the top of the admin dashboard.
 type AdminStats struct {
-	Users       int64 `json:"users"`
-	Threads     int64 `json:"threads"`
-	Posts       int64 `json:"posts"`
-	OpenReports int64 `json:"open_reports"`
-	BannedUsers int64 `json:"banned_users"`
-	PublishedAt int64 `json:"published_at"`
+	Users        int64 `json:"users"`
+	Threads      int64 `json:"threads"`
+	Posts        int64 `json:"posts"`
+	OpenReports  int64 `json:"open_reports"`
+	PendingItems int64 `json:"pending_items"`
+	BannedUsers  int64 `json:"banned_users"`
+	PublishedAt  int64 `json:"published_at"`
 }
 
 // AdminStats gathers the dashboard counters in one round trip.
@@ -300,9 +301,14 @@ func (s *Store) AdminStats(ctx context.Context) (*AdminStats, error) {
 		dst   *int64
 	}{
 		{`SELECT count(*) FROM users`, &st.Users},
-		{`SELECT count(*) FROM threads WHERE deleted_at IS NULL`, &st.Threads},
-		{`SELECT count(*) FROM posts WHERE deleted_at IS NULL`, &st.Posts},
+		{`SELECT count(*) FROM threads WHERE deleted_at IS NULL AND approved_at IS NOT NULL`, &st.Threads},
+		{`SELECT count(*) FROM posts WHERE deleted_at IS NULL AND approved_at IS NOT NULL`, &st.Posts},
 		{`SELECT count(*) FROM reports WHERE status = 'open'`, &st.OpenReports},
+		{`SELECT (SELECT count(*) FROM threads
+		      WHERE approved_at IS NULL AND deleted_at IS NULL)
+		      + (SELECT count(*) FROM posts p JOIN threads t ON t.id = p.thread_id
+		         WHERE p.approved_at IS NULL AND p.deleted_at IS NULL
+		           AND t.approved_at IS NOT NULL)`, &st.PendingItems},
 		{`SELECT count(*) FROM users WHERE status = 'banned'`, &st.BannedUsers},
 	}
 	for _, c := range counts {
@@ -341,7 +347,8 @@ func (s *Store) Search(ctx context.Context, query, boardSlug string, limit int) 
 		LEFT JOIN users u ON u.id = p.author_id
 		WHERE search_index MATCH ?
 		  AND t.deleted_at IS NULL
-		  AND (p.id IS NULL OR p.deleted_at IS NULL)`
+		  AND t.approved_at IS NOT NULL
+		  AND (p.id IS NULL OR (p.deleted_at IS NULL AND p.approved_at IS NOT NULL))`
 	args := []any{match}
 	if boardSlug != "" {
 		sqlText += ` AND b.slug = ? COLLATE NOCASE`

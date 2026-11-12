@@ -21,8 +21,13 @@ export default function RegisterForm({
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [website, setWebsite] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // When the form appeared. A submission faster than a person can type is not a
+  // person; the value is advisory and the API ignores it when absent.
+  const [openedAt] = useState(() => Date.now());
 
   async function submit() {
     setBusy(true);
@@ -30,7 +35,13 @@ export default function RegisterForm({
     try {
       await clientApi<Self>("/api/v1/auth/register", {
         method: "POST",
-        body: { username, email, password },
+        body: {
+          username,
+          email,
+          password,
+          website,
+          elapsed_ms: Date.now() - openedAt,
+        },
       });
       router.push("/");
       router.refresh();
@@ -99,6 +110,20 @@ export default function RegisterForm({
             minLength={10}
           />
           <span className="hint">At least 10 characters. A passphrase is easier to remember.</span>
+        </div>
+
+        {/* Hidden from people, tempting to bots. */}
+        <div className="hp-field" aria-hidden="true">
+          <label htmlFor="register-website">Website</label>
+          <input
+            id="register-website"
+            name="website"
+            type="text"
+            tabIndex={-1}
+            autoComplete="off"
+            value={website}
+            onChange={(event) => setWebsite(event.target.value)}
+          />
         </div>
 
         <button type="submit" className="btn btn-primary btn-lg" disabled={busy}>

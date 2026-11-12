@@ -54,9 +54,13 @@ Pages Router, which is confusing but accurate.
 components that fetch with the reader's cookie. Voting, composing and admin forms
 are client components.
 
-**Migrations are append-only.** Add `0003_something.sql`; never edit an applied
+**Migrations are append-only.** Add `0004_something.sql`; never edit an applied
 one. Each file runs in its own transaction and is recorded in
 `schema_migrations`.
+
+**Spam rules live in `internal/policy`.** They are pure functions taking an
+account and the thresholds, with no HTTP and no SQL, because they are the part
+most likely to be argued about. Add a rule there first and wire it in second.
 
 **Write the test that would have caught the bug.** Where the property matters —
 sanitisation, single-use tokens, authorisation — assert the property, not the

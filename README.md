@@ -13,6 +13,8 @@ about a minute.
   links, and optional GitHub or Discord sign-in
 - **Full-text search** over every post, using SQLite's FTS5
 - **Votes, reports and a moderation queue**, with an audit log of who did what
+- **Spam defence** that does not get in the way: new accounts cannot post links,
+  have a daily limit, and can be held for review until a moderator publishes them
 - **Notifications** for replies and `@mentions`
 - **Profiles, avatars and image uploads**
 - **Light and dark themes** that follow the reader's system preference

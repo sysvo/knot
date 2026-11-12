@@ -44,6 +44,8 @@ export interface Thread {
   pinned: boolean;
   locked: boolean;
   deleted: boolean;
+  /** Held for review: only its author and moderators can see it. */
+  pending: boolean;
   author: User | null;
   last_author: User | null;
   excerpt: string;
@@ -62,9 +64,18 @@ export interface Post {
   score: number;
   my_vote: number;
   deleted: boolean;
+  /** Held for review before anyone else sees it. */
+  pending: boolean;
   created_at: number;
   edited_at: number | null;
   hidden: boolean;
+}
+
+/** A reply in the review queue, with the thread it belongs to. */
+export interface PendingPost {
+  post: Post;
+  thread_title: string;
+  board_slug: string;
 }
 
 export interface Notification {
@@ -147,6 +158,7 @@ export interface AdminStats {
   threads: number;
   posts: number;
   open_reports: number;
+  pending_items: number;
   banned_users: number;
   published_at: number;
 }

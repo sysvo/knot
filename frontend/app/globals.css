@@ -1066,6 +1066,15 @@ kbd {
   gap: 0.7rem;
 }
 
+.setting-legend {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-faint);
+  font-weight: 650;
+  padding: 0;
+}
+
 .stat {
   padding: 0.85rem 1rem;
   background: var(--bg-raised);
@@ -1215,6 +1224,17 @@ kbd {
 
 .link-button.danger:hover {
   color: var(--danger);
+}
+
+/* A field that people never see or focus, but form-filling bots complete.
+   Moving it off-screen beats display:none, which some bots skip on purpose. */
+.hp-field {
+  position: absolute;
+  left: -9999px;
+  top: auto;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
 }
 
 .sr-only {

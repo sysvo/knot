@@ -136,6 +136,34 @@ If that setting is on and mail is broken, new accounts cannot post. Check
 `docker compose logs api` for `send verify mail` errors before assuming the
 setting is wrong.
 
+## Keeping spam out
+
+The settings are under **Administration → Settings → Spam protection**, and they
+take effect immediately — no restart. Moderation and administration accounts are
+never restricted by them.
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| Posts before links are allowed | 3 | A new account cannot post links to other sites until it has this many published posts. |
+| Days before links are allowed | 2 | …and has been a member this long. Both must be met. `0` turns the rule off. |
+| Daily post limit for new accounts | 20 | Applies only until an account qualifies above. `0` means no limit. |
+| Hold the first posts for review | 0 (off) | How many of a new account's first posts wait for a moderator. |
+| Blocked e-mail domains | empty | Refused at registration; subdomains included. |
+
+**For a public forum, the first three at their defaults stop almost everything
+without touching a legitimate person.** A held-post queue is the stronger option,
+but it comes with a promise: someone has to look at it. Turn on *Hold the first
+posts* only if you check the queue most days — a new member whose first post sits
+invisible for a week concludes the forum is broken and does not come back.
+
+Two things are always on and are not configurable: registration has a hidden
+field that people never fill and bots usually do, and a form submitted in under a
+second is rejected. Both produce the same vague failure as any other bad sign-up.
+
+If you are being flooded anyway, the honest response is to close registration
+(turn off *Allow registration*) until it passes, rather than to hope the limits
+hold. Your existing members are unaffected.
+
 ## Social sign-in
 
 Each provider needs a client id and secret, and a callback URL registered with

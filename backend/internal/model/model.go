@@ -68,14 +68,17 @@ type Board struct {
 
 // Thread is a topic: a title plus an ordered list of posts.
 type Thread struct {
-	ID         int64  `json:"id"`
-	BoardID    int64  `json:"board_id"`
-	BoardSlug  string `json:"board_slug"`
-	BoardName  string `json:"board_name"`
-	Title      string `json:"title"`
-	Pinned     bool   `json:"pinned"`
-	Locked     bool   `json:"locked"`
-	Deleted    bool   `json:"deleted"`
+	ID        int64  `json:"id"`
+	BoardID   int64  `json:"board_id"`
+	BoardSlug string `json:"board_slug"`
+	BoardName string `json:"board_name"`
+	Title     string `json:"title"`
+	Pinned    bool   `json:"pinned"`
+	Locked    bool   `json:"locked"`
+	Deleted   bool   `json:"deleted"`
+	// Pending means the thread is held for review and is only visible to its
+	// author and to moderators.
+	Pending    bool   `json:"pending"`
 	Author     *User  `json:"author"`
 	LastAuthor *User  `json:"last_author"`
 	Excerpt    string `json:"excerpt"`
@@ -87,14 +90,16 @@ type Thread struct {
 
 // Post is a single message inside a thread.
 type Post struct {
-	ID        int64  `json:"id"`
-	ThreadID  int64  `json:"thread_id"`
-	Author    *User  `json:"author"`
-	BodyMD    string `json:"body_md"`
-	BodyHTML  string `json:"body_html"`
-	Score     int64  `json:"score"`
-	MyVote    int    `json:"my_vote"`
-	Deleted   bool   `json:"deleted"`
+	ID       int64  `json:"id"`
+	ThreadID int64  `json:"thread_id"`
+	Author   *User  `json:"author"`
+	BodyMD   string `json:"body_md"`
+	BodyHTML string `json:"body_html"`
+	Score    int64  `json:"score"`
+	MyVote   int    `json:"my_vote"`
+	Deleted  bool   `json:"deleted"`
+	// Pending means the post is held for review before anyone else sees it.
+	Pending   bool   `json:"pending"`
 	CreatedAt int64  `json:"created_at"`
 	EditedAt  *int64 `json:"edited_at"`
 	Hidden    bool   `json:"hidden"`

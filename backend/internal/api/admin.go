@@ -2,10 +2,12 @@ package api
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/sysvo/knot/internal/auth"
 	"github.com/sysvo/knot/internal/model"
+	"github.com/sysvo/knot/internal/policy"
 )
 
 // mustAdmin writes a 403 and returns nil unless the caller is an administrator.
@@ -212,6 +214,20 @@ var editableSettings = map[string]bool{
 	settingAllowRegister:    true,
 	settingRequireVerify:    true,
 	settingRegistrationNote: true,
+
+	policy.KeyLinksRequirePosts: true,
+	policy.KeyLinksRequireDays:  true,
+	policy.KeyNewPostsPerDay:    true,
+	policy.KeyApproveFirstPosts: true,
+	policy.KeyBlockedDomains:    true,
+}
+
+// spamIntegerSettings must parse as non-negative whole numbers.
+var spamIntegerSettings = map[string]int{
+	policy.KeyLinksRequirePosts: 1000,
+	policy.KeyLinksRequireDays:  365,
+	policy.KeyNewPostsPerDay:    10000,
+	policy.KeyApproveFirstPosts: 100,
 }
 
 func (s *Server) handleAdminSetSettings(w http.ResponseWriter, r *http.Request) {
@@ -236,6 +252,17 @@ func (s *Server) handleAdminSetSettings(w http.ResponseWriter, r *http.Request) 
 	if name, ok := clean[settingSiteName]; ok && (name == "" || len([]rune(name)) > 40) {
 		writeError(w, http.StatusBadRequest, "invalid", "site name must be 1-40 characters")
 		return
+	}
+	for key, maxValue := range spamIntegerSettings {
+		raw, present := clean[key]
+		if !present {
+			continue
+		}
+		n, err := strconv.Atoi(strings.TrimSpace(raw))
+		if err != nil || n < 0 || n > maxValue {
+			writeError(w, http.StatusBadRequest, "invalid", key+" must be a whole number between 0 and "+strconv.Itoa(maxValue))
+			return
+		}
 	}
 	if err := s.store.SetSettings(r.Context(), clean); err != nil {
 		writeStoreError(s, w, r, err, "could not save settings")
@@ -365,4 +392,81 @@ func (s *Server) handleAdminAudit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"entries": entries})
+}
+
+// ---- review queue ----
+
+func (s *Server) handleAdminPending(w http.ResponseWriter, r *http.Request) {
+	if s.mustModerator(w, r) == nil {
+		return
+	}
+
+	threads, err := s.store.PendingThreads(r.Context(), 50)
+	if err != nil {
+		writeStoreError(s, w, r, err, "could not load the review queue")
+		return
+	}
+	posts, err := s.store.PendingPosts(r.Context(), 50)
+	if err != nil {
+		writeStoreError(s, w, r, err, "could not load the review queue")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"threads": threads, "posts": posts})
+}
+
+func (s *Server) handleAdminApproveThread(w http.ResponseWriter, r *http.Request) {
+	mod := s.mustModerator(w, r)
+	if mod == nil {
+		return
+	}
+	id, ok := idParam(r, "id")
+	if !ok {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid thread id")
+		return
+	}
+	if err := s.store.ApproveThread(r.Context(), id); err != nil {
+		writeStoreError(s, w, r, err, "no such thread")
+		return
+	}
+	_ = s.store.Log(r.Context(), mod.ID, "thread.approve", "thread", id, "")
+
+	// The opening post can mention people, and it is now visible, so let it
+	// notify them. Notifying the thread author is a no-op: they wrote it.
+	if posts, _, err := s.store.ListPosts(r.Context(), id, mod.ID, 1, 0, true); err == nil && len(posts) > 0 {
+		if author := posts[0].Author; author != nil {
+			s.notifyPostPublished(r.Context(), author, &posts[0])
+		}
+	}
+
+	thread, err := s.store.ThreadByID(r.Context(), id)
+	if err != nil {
+		writeStoreError(s, w, r, err, "no such thread")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"thread": thread})
+}
+
+func (s *Server) handleAdminApprovePost(w http.ResponseWriter, r *http.Request) {
+	mod := s.mustModerator(w, r)
+	if mod == nil {
+		return
+	}
+	id, ok := idParam(r, "id")
+	if !ok {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid post id")
+		return
+	}
+
+	post, err := s.store.ApprovePost(r.Context(), id)
+	if err != nil {
+		writeStoreError(s, w, r, err, "no such post")
+		return
+	}
+	_ = s.store.Log(r.Context(), mod.ID, "post.approve", "post", id, "")
+
+	if post.Author != nil {
+		s.notifyPostPublished(r.Context(), post.Author, post)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"post": post})
 }

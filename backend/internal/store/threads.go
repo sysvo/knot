@@ -11,8 +11,8 @@ import (
 
 func threadSelect() string {
 	return `SELECT t.id, t.board_id, b.slug, b.name, t.title, t.pinned, t.locked,
-	       (t.deleted_at IS NOT NULL), t.excerpt, t.post_count, t.view_count,
-	       t.created_at, t.last_post_at,
+	       (t.deleted_at IS NOT NULL), (t.approved_at IS NULL), t.excerpt,
+	       t.post_count, t.view_count, t.created_at, t.last_post_at,
 	       ` + userCols("u") + `,
 	       ` + userCols("lu") + `
 	FROM threads t
@@ -26,10 +26,11 @@ func scanThread(row interface{ Scan(...any) error }) (*model.Thread, error) {
 	var (
 		t                   model.Thread
 		pinned, locked, del int
+		pending             int
 		author, lastAuthor  userRow
 	)
 	dest := []any{&t.ID, &t.BoardID, &t.BoardSlug, &t.BoardName, &t.Title,
-		&pinned, &locked, &del, &t.Excerpt, &t.PostCount, &t.ViewCount,
+		&pinned, &locked, &del, &pending, &t.Excerpt, &t.PostCount, &t.ViewCount,
 		&t.CreatedAt, &t.LastPostAt}
 	dest = append(dest, author.dest()...)
 	dest = append(dest, lastAuthor.dest()...)
@@ -45,6 +46,7 @@ func scanThread(row interface{ Scan(...any) error }) (*model.Thread, error) {
 	t.Pinned = pinned != 0
 	t.Locked = locked != 0
 	t.Deleted = del != 0
+	t.Pending = pending != 0
 	t.Author = author.user()
 	t.LastAuthor = lastAuthor.user()
 	return &t, nil
@@ -70,17 +72,30 @@ func (s ThreadSort) orderBy() string {
 	}
 }
 
-// ListThreads pages through threads, optionally restricted to one board.
-// Soft-deleted threads are excluded unless includeDeleted is set.
-func (s *Store) ListThreads(ctx context.Context, boardID *int64, sort ThreadSort, limit, offset int, includeDeleted bool) ([]model.Thread, int64, error) {
+// ThreadQuery selects a page of threads. The zero value lists published,
+// undeleted threads across every board, but Limit must still be set.
+type ThreadQuery struct {
+	BoardID        *int64
+	Sort           ThreadSort
+	Limit          int
+	Offset         int
+	IncludeDeleted bool
+	IncludePending bool
+}
+
+// ListThreads pages through threads.
+func (s *Store) ListThreads(ctx context.Context, q ThreadQuery) ([]model.Thread, int64, error) {
 	where := ` WHERE 1 = 1`
 	args := []any{}
-	if boardID != nil {
+	if q.BoardID != nil {
 		where += ` AND t.board_id = ?`
-		args = append(args, *boardID)
+		args = append(args, *q.BoardID)
 	}
-	if !includeDeleted {
+	if !q.IncludeDeleted {
 		where += ` AND t.deleted_at IS NULL`
+	}
+	if !q.IncludePending {
+		where += ` AND t.approved_at IS NOT NULL`
 	}
 
 	var total int64
@@ -90,8 +105,8 @@ func (s *Store) ListThreads(ctx context.Context, boardID *int64, sort ThreadSort
 	}
 
 	// threadSelect already joins boards and users, so the same WHERE applies.
-	sqlText := threadSelect() + where + sort.orderBy() + ` LIMIT ? OFFSET ?`
-	rows, err := s.db.QueryContext(ctx, sqlText, append(args, limit, offset)...)
+	sqlText := threadSelect() + where + q.Sort.orderBy() + ` LIMIT ? OFFSET ?`
+	rows, err := s.db.QueryContext(ctx, sqlText, append(args, q.Limit, q.Offset)...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -114,8 +129,9 @@ func (s *Store) ThreadByID(ctx context.Context, id int64) (*model.Thread, error)
 }
 
 // CreateThread inserts a thread and its first post in one transaction.
-// searchText is the plain-text rendering used by the full-text index.
-func (s *Store) CreateThread(ctx context.Context, boardID, authorID int64, title, excerpt, bodyMD, bodyHTML, searchText string) (*model.Thread, error) {
+// searchText is the plain-text rendering used by the full-text index. When
+// approved is false the thread and its first post are held for review.
+func (s *Store) CreateThread(ctx context.Context, boardID, authorID int64, title, excerpt, bodyMD, bodyHTML, searchText string, approved bool) (*model.Thread, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -123,10 +139,15 @@ func (s *Store) CreateThread(ctx context.Context, boardID, authorID int64, title
 	defer tx.Rollback()
 
 	now := time.Now().Unix()
+	var approvedAt any
+	if approved {
+		approvedAt = now
+	}
+
 	res, err := tx.ExecContext(ctx,
-		`INSERT INTO threads (board_id, author_id, title, excerpt, created_at, last_post_at, post_count)
-		 VALUES (?, ?, ?, ?, ?, ?, 1)`,
-		boardID, authorID, title, excerpt, now, now)
+		`INSERT INTO threads (board_id, author_id, title, excerpt, created_at, last_post_at, approved_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		boardID, authorID, title, excerpt, now, now, approvedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -135,26 +156,44 @@ func (s *Store) CreateThread(ctx context.Context, boardID, authorID int64, title
 		return nil, err
 	}
 
-	postRes, err := tx.ExecContext(ctx,
-		`INSERT INTO posts (thread_id, author_id, body_md, body_html, search_text, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		threadID, authorID, bodyMD, bodyHTML, searchText, now)
-	if err != nil {
-		return nil, err
-	}
-	postID, err := postRes.LastInsertId()
-	if err != nil {
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO posts (thread_id, author_id, body_md, body_html, search_text, created_at, approved_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		threadID, authorID, bodyMD, bodyHTML, searchText, now, approvedAt); err != nil {
 		return nil, err
 	}
 
-	if _, err := tx.ExecContext(ctx,
-		`UPDATE threads SET last_post_id = ? WHERE id = ?`, postID, threadID); err != nil {
+	if err := recountThread(ctx, tx, threadID); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
 	return s.ThreadByID(ctx, threadID)
+}
+
+// ApproveThread publishes a thread held for review, together with the posts
+// that were waiting with it.
+func (s *Store) ApproveThread(ctx context.Context, id int64) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	now := time.Now().Unix()
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE threads SET approved_at = ? WHERE id = ? AND approved_at IS NULL`, now, id); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE posts SET approved_at = ? WHERE thread_id = ? AND approved_at IS NULL`, now, id); err != nil {
+		return err
+	}
+	if err := recountThread(ctx, tx, id); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // UpdateThreadTitle changes a title; the search index follows via trigger.
@@ -186,6 +225,40 @@ func (s *Store) IncrementThreadViews(ctx context.Context, id int64) error {
 
 // RecentThreads is the home page list: newest activity across all boards.
 func (s *Store) RecentThreads(ctx context.Context, limit int) ([]model.Thread, error) {
-	threads, _, err := s.ListThreads(ctx, nil, SortRecent, limit, 0, false)
+	threads, _, err := s.ListThreads(ctx, ThreadQuery{Sort: SortRecent, Limit: limit})
 	return threads, err
+}
+
+// execer is the subset of *sql.DB and *sql.Tx that recountThread needs, so the
+// recount can run inside the transaction that changed the posts.
+type execer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+// recountThread recomputes a thread's counters from its posts.
+//
+// Publishing, approving and deleting all change what should be counted, and
+// incremental arithmetic in three places eventually disagrees with the data.
+// One query that derives the answer cannot drift.
+func recountThread(ctx context.Context, db execer, threadID int64) error {
+	_, err := db.ExecContext(ctx, `
+		UPDATE threads SET
+		    post_count = (
+		        SELECT count(*) FROM posts
+		        WHERE thread_id = ? AND deleted_at IS NULL AND approved_at IS NOT NULL
+		    ),
+		    last_post_id = (
+		        SELECT id FROM posts
+		        WHERE thread_id = ? AND deleted_at IS NULL AND approved_at IS NOT NULL
+		        ORDER BY created_at DESC, id DESC LIMIT 1
+		    ),
+		    last_post_at = COALESCE(
+		        (SELECT created_at FROM posts
+		         WHERE thread_id = ? AND deleted_at IS NULL AND approved_at IS NOT NULL
+		         ORDER BY created_at DESC, id DESC LIMIT 1),
+		        created_at
+		    )
+		WHERE id = ?`,
+		threadID, threadID, threadID, threadID)
+	return err
 }

@@ -12,6 +12,7 @@ import type {
   Meta,
   Notification,
   PageInfo,
+  PendingPost,
   Post,
   Report,
   SearchHit,
@@ -221,6 +222,14 @@ export async function getSettings(): Promise<Record<string, string>> {
     return data.settings ?? {};
   } catch {
     return {};
+  }
+}
+
+export async function getPending(): Promise<{ threads: Thread[]; posts: PendingPost[] }> {
+  try {
+    return await request<{ threads: Thread[]; posts: PendingPost[] }>("/api/v1/admin/pending");
+  } catch {
+    return { threads: [], posts: [] };
   }
 }
 

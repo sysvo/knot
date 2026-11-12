@@ -50,7 +50,8 @@ production) forwards to the Go process. Consequences worth knowing:
 
 Threads and posts are **soft deleted** (`deleted_at`) so replies do not lose
 their context and moderators can still see what happened. Deleting a board is
-hard: it cascades.
+hard: it cascades. A NULL `approved_at` means the row is held for review; see
+[Spam defence](#spam-defence) below.
 
 `threads` keeps denormalised `post_count`, `last_post_at`, `last_post_id` and
 `excerpt` so that listing a board is a single indexed query instead of an
@@ -101,6 +102,45 @@ for both words and no input can be read as an FTS operator.
 - **Timing**: a missing account still performs a password hash comparison, so
   "no such user" and "wrong password" take the same time.
 
+## Spam defence
+
+An open registration form on a public forum is an invitation. The rules are
+deliberately few, and each one is narrow enough to explain to a real person:
+
+- **Links are earned.** A new account cannot post links to other sites until it
+  has N published posts *and* has been a member for M days. The check runs on the
+  rendered HTML, not the Markdown, so bare URLs the renderer turns into links and
+  external images are caught by the same rule that catches `[text](url)`. It is
+  re-checked on edit, because otherwise the trick is to post clean text and edit
+  the link in.
+- **A daily limit** applies to accounts that have not qualified yet. It counts
+  held posts too, so filling the queue is not a way around it.
+- **First posts can be held.** `approved_at IS NULL` means "waiting for a
+  moderator". Held content is invisible everywhere: out of board listings, out of
+  search, out of the counters, and it never triggers a notification, because a
+  notification pointing at something the recipient cannot open is worse than no
+  notification. Approving publishes it and *then* announces it.
+- **Registration has a honeypot and a timing floor.** Both reject with the same
+  vague failure as any other bad sign-up.
+- **Optional e-mail domain blocklist**, matching subdomains.
+
+Two design choices are worth calling out.
+
+**Trust is derived, never stored.** Whether an account may post links is computed
+from its published post count and the age of the account on each request. There
+is no `trust_level` column to get out of step with reality, no promotion job, and
+no way for a state machine to leave someone permanently stuck in a level they
+have outgrown. The cost is one indexed count per write, which is nothing.
+
+**Counters are recounted, not adjusted.** Publishing, approving and deleting all
+change `post_count` and `last_post_at`, and incremental arithmetic in three
+places eventually disagrees with the data. `recountThread` derives them from the
+posts in one statement, so there is exactly one answer.
+
+What this does not do: no CAPTCHA, no IP reputation, no machine learning, no
+"shadow banning". Those either require a third-party service, which breaks the
+single-binary promise, or are dishonest to the person on the other side.
+
 ## Security posture
 
 - CSRF: `SameSite=Lax` cookies plus an `Origin` check on every unsafe method.
@@ -140,6 +180,7 @@ rather than gaps:
 | `backend/internal/store` | Every SQL statement |
 | `backend/internal/db` | Connection, embedded migrations |
 | `backend/internal/auth` | Password hashing, tokens, validation |
+| `backend/internal/policy` | Who may post links, who needs review, blocked domains |
 | `backend/internal/markdown` | Render, sanitise, plain text |
 | `backend/internal/mail` | SMTP, or logging when unconfigured |
 | `frontend/app` | Routes (App Router) |

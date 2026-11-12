@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"regexp"
 	"strings"
@@ -49,7 +50,9 @@ func (s *Server) handleListBoardThreads(w http.ResponseWriter, r *http.Request) 
 	page, perPage, offset := pageParams(r, 20, 100)
 	sort := store.ThreadSort(r.URL.Query().Get("sort"))
 
-	threads, total, err := s.store.ListThreads(r.Context(), &board.ID, sort, perPage, offset, false)
+	threads, total, err := s.store.ListThreads(r.Context(), store.ThreadQuery{
+		BoardID: &board.ID, Sort: sort, Limit: perPage, Offset: offset,
+	})
 	if err != nil {
 		writeStoreError(s, w, r, err, "threads not found")
 		return
@@ -67,7 +70,9 @@ func (s *Server) handleListThreads(w http.ResponseWriter, r *http.Request) {
 	page, perPage, offset := pageParams(r, 20, 100)
 	sort := store.ThreadSort(r.URL.Query().Get("sort"))
 
-	threads, total, err := s.store.ListThreads(r.Context(), nil, sort, perPage, offset, false)
+	threads, total, err := s.store.ListThreads(r.Context(), store.ThreadQuery{
+		Sort: sort, Limit: perPage, Offset: offset,
+	})
 	if err != nil {
 		writeStoreError(s, w, r, err, "threads not found")
 		return
@@ -90,25 +95,37 @@ func (s *Server) handleGetThread(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(s, w, r, err, "no such thread")
 		return
 	}
-	if thread.Deleted && !currentUser(r).CanModerate() {
+
+	viewer := currentUser(r)
+	isAuthor := viewer != nil && thread.Author != nil && viewer.ID == thread.Author.ID
+	// Held content is visible to its author and to moderators, and to nobody
+	// else; a 404 rather than a 403 avoids confirming that it exists.
+	if thread.Deleted && !viewer.CanModerate() {
+		writeError(w, http.StatusNotFound, "not_found", "no such thread")
+		return
+	}
+	if thread.Pending && !viewer.CanModerate() && !isAuthor {
 		writeError(w, http.StatusNotFound, "not_found", "no such thread")
 		return
 	}
 
 	var viewerID int64
-	if u := currentUser(r); u != nil {
-		viewerID = u.ID
+	if viewer != nil {
+		viewerID = viewer.ID
 	}
 
 	page, perPage, offset := pageParams(r, 20, 100)
-	posts, total, err := s.store.ListPosts(r.Context(), id, viewerID, perPage, offset)
+	posts, total, err := s.store.ListPosts(r.Context(), id, viewerID, perPage, offset, viewer.CanModerate() || isAuthor)
 	if err != nil {
 		writeStoreError(s, w, r, err, "posts not found")
 		return
 	}
 
-	// Only count a read once the thread actually rendered.
-	_ = s.store.IncrementThreadViews(r.Context(), id)
+	// Only count a read once the thread actually rendered, and never for
+	// something that is still waiting for review.
+	if !thread.Pending {
+		_ = s.store.IncrementThreadViews(r.Context(), id)
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"thread": thread,
@@ -171,10 +188,22 @@ func (s *Server) handleCreateThread(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	verdict, err := s.assess(r.Context(), u)
+	if err != nil {
+		writeStoreError(s, w, r, err, "could not check your posting allowance")
+		return
+	}
+	if !s.checkQuota(w, r, u, verdict) {
+		return
+	}
+
 	html := s.md.Render(body)
+	if !s.checkLinks(w, r, html, verdict) {
+		return
+	}
 	excerpt := s.md.Excerpt(body)
 
-	thread, err := s.store.CreateThread(r.Context(), board.ID, u.ID, title, excerpt, body, html, s.md.PlainText(body))
+	thread, err := s.store.CreateThread(r.Context(), board.ID, u.ID, title, excerpt, body, html, s.md.PlainText(body), !verdict.NeedsApproval)
 	if err != nil {
 		writeStoreError(s, w, r, err, "could not create the thread")
 		return
@@ -344,23 +373,37 @@ func (s *Server) handleCreatePost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	post, err := s.store.CreatePost(r.Context(), id, u.ID, body, s.md.Render(body), s.md.PlainText(body))
+	verdict, err := s.assess(r.Context(), u)
+	if err != nil {
+		writeStoreError(s, w, r, err, "could not check your posting allowance")
+		return
+	}
+	if !s.checkQuota(w, r, u, verdict) {
+		return
+	}
+
+	html := s.md.Render(body)
+	if !s.checkLinks(w, r, html, verdict) {
+		return
+	}
+
+	post, err := s.store.CreatePost(r.Context(), id, u.ID, body, html, s.md.PlainText(body), !verdict.NeedsApproval)
 	if err != nil {
 		writeStoreError(s, w, r, err, "could not post the reply")
 		return
 	}
 
-	// Notify the thread author about the reply, then anyone mentioned.
-	if thread.Author != nil {
-		_ = s.store.Notify(r.Context(), thread.Author.ID, u.ID, "reply", thread.ID, post.ID)
+	// A held post is invisible to everyone else, so nothing is announced until a
+	// moderator approves it.
+	if !post.Pending {
+		s.notifyPostPublished(r.Context(), u, post)
 	}
-	s.notifyMentions(r, u, body, thread.ID, post.ID)
 
 	writeJSON(w, http.StatusCreated, map[string]any{"post": post})
 }
 
 // notifyMentions resolves @username references to accounts and notifies them.
-func (s *Server) notifyMentions(r *http.Request, actor *model.User, body string, threadID, postID int64) {
+func (s *Server) notifyMentions(ctx context.Context, actor *model.User, body string, threadID, postID int64) {
 	seen := map[string]bool{}
 	matches := mentionRE.FindAllStringSubmatch(body, 10)
 	for _, m := range matches {
@@ -371,14 +414,14 @@ func (s *Server) notifyMentions(r *http.Request, actor *model.User, body string,
 		}
 		seen[lower] = true
 
-		acct, err := s.store.AccountByUsername(r.Context(), name)
+		acct, err := s.store.AccountByUsername(ctx, name)
 		if err != nil {
 			continue // unknown handle: silently ignored
 		}
 		if acct.User.Status != model.StatusActive {
 			continue
 		}
-		_ = s.store.Notify(r.Context(), acct.User.ID, actor.ID, "mention", threadID, postID)
+		_ = s.store.Notify(ctx, acct.User.ID, actor.ID, "mention", threadID, postID)
 	}
 }
 
@@ -415,6 +458,18 @@ func (s *Server) handleUpdatePost(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+
+	// Re-check links on edit: otherwise a new account could post clean text and
+	// then edit the link in.
+	verdict, err := s.assess(r.Context(), u)
+	if err != nil {
+		writeStoreError(s, w, r, err, "could not check your posting allowance")
+		return
+	}
+	if !s.checkLinks(w, r, s.md.Render(body), verdict) {
+		return
+	}
+
 	if err := s.store.UpdatePost(r.Context(), id, body, s.md.Render(body), s.md.PlainText(body)); err != nil {
 		writeStoreError(s, w, r, err, "could not update the post")
 		return

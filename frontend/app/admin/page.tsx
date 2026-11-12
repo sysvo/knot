@@ -8,30 +8,34 @@ import {
   getAudit,
   getBoards,
   getMeta,
+  getPending,
   getReports,
   getSettings,
 } from "@/lib/server";
 import { canModerate, isAdmin } from "@/lib/types";
 import { formatDateTime } from "@/lib/format";
 import BoardsPanel from "@/components/admin/BoardsPanel";
+import PendingPanel from "@/components/admin/PendingPanel";
 import ReportsPanel from "@/components/admin/ReportsPanel";
 import SettingsPanel from "@/components/admin/SettingsPanel";
 import UsersPanel from "@/components/admin/UsersPanel";
 
 export const metadata: Metadata = { title: "Administration" };
 
-type Tab = "overview" | "boards" | "users" | "reports" | "settings" | "audit";
+type Tab = "overview" | "boards" | "users" | "review" | "reports" | "settings" | "audit";
 
 const ADMIN_TABS: { key: Tab; label: string }[] = [
   { key: "overview", label: "Overview" },
   { key: "boards", label: "Boards" },
   { key: "users", label: "Users" },
+  { key: "review", label: "Review" },
   { key: "reports", label: "Reports" },
   { key: "settings", label: "Settings" },
   { key: "audit", label: "Audit log" },
 ];
 
 const MODERATOR_TABS: { key: Tab; label: string }[] = [
+  { key: "review", label: "Review" },
   { key: "reports", label: "Reports" },
   { key: "audit", label: "Audit log" },
 ];
@@ -82,6 +86,7 @@ export default async function AdminPage({
       {tab === "overview" && admin && <Overview />}
       {tab === "boards" && admin && <BoardsTab />}
       {tab === "users" && admin && <UsersTab query={q ?? ""} />}
+      {tab === "review" && <ReviewTab />}
       {tab === "reports" && <ReportsTab showAll={status === "all"} />}
       {tab === "settings" && admin && <SettingsTab />}
       {tab === "audit" && <AuditTab />}
@@ -116,15 +121,35 @@ async function Overview() {
           <div className="stat-label">Open reports</div>
         </div>
         <div className="stat">
+          <div className="stat-value">{stats.pending_items}</div>
+          <div className="stat-label">Awaiting review</div>
+        </div>
+        <div className="stat">
           <div className="stat-value">{stats.banned_users}</div>
           <div className="stat-label">Suspended</div>
         </div>
       </div>
 
-      {reports.length > 0 && (
-        <div className="panel">
-          <strong>{reports.length}</strong>{" "}
-          <Link href="/admin?tab=reports">report{reports.length === 1 ? "" : "s"} waiting for review</Link>.
+      {(reports.length > 0 || stats.pending_items > 0) && (
+        <div className="panel stack-sm small">
+          {reports.length > 0 && (
+            <span>
+              <strong>{reports.length}</strong>{" "}
+              <Link href="/admin?tab=reports">
+                report{reports.length === 1 ? "" : "s"} waiting for review
+              </Link>
+              .
+            </span>
+          )}
+          {stats.pending_items > 0 && (
+            <span>
+              <strong>{stats.pending_items}</strong>{" "}
+              <Link href="/admin?tab=review">
+                item{stats.pending_items === 1 ? "" : "s"} held for review
+              </Link>
+              .
+            </span>
+          )}
         </div>
       )}
     </div>
@@ -144,6 +169,11 @@ async function UsersTab({ query }: { query: string }) {
 async function ReportsTab({ showAll }: { showAll: boolean }) {
   const reports = await getReports(showAll);
   return <ReportsPanel reports={reports} showAll={showAll} />;
+}
+
+async function ReviewTab() {
+  const { threads, posts } = await getPending();
+  return <PendingPanel threads={threads} posts={posts} />;
 }
 
 async function SettingsTab() {

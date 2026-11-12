@@ -132,6 +132,7 @@ export default function PostCard({
         <div className="post-head">
           <Timestamp at={post.created_at} />
           {post.edited_at && <span>· edited <Timestamp at={post.edited_at} /></span>}
+          {post.pending && <span className="badge badge-warn">Awaiting review</span>}
           <a href={`#post-${post.id}`} className="faint tiny" aria-label="Link to this post">
             #
           </a>

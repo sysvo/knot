@@ -106,16 +106,40 @@ type registerRequest struct {
 	Username string `json:"username"`
 	Email    string `json:"email"`
 	Password string `json:"password"`
+
+	// Website is a honeypot. It is hidden from people and left empty by them;
+	// a bot filling in every field gives itself away. The name is deliberately
+	// plausible, because obvious names are the ones spam scripts skip.
+	Website string `json:"website"`
+	// ElapsedMs is how long the form was on screen before submission. A filled
+	// form in under a second was not filled in by a person.
+	ElapsedMs int `json:"elapsed_ms"`
 }
 
+// minFormMillis is the shortest plausible time to fill in a registration form.
+const minFormMillis = 1200
+
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
-	if !s.allow(w, r, "register", 10, 5) {
+	// A dozen sign-ups in a burst is generous for a household, an office or a
+	// small event behind one address, and still nothing to a spam operator. The
+	// honeypot and the review queue are what actually stop the bots.
+	if !s.allow(w, r, "register", 20, 12) {
 		return
 	}
 	var req registerRequest
 	if !decodeJSON(w, r, &req) {
 		return
 	}
+
+	// A bot that fills the honeypot, or one that submits instantly, gets the
+	// same vague failure as any other rejected registration.
+	if req.Website != "" || (req.ElapsedMs > 0 && req.ElapsedMs < minFormMillis) {
+		s.log.Info("registration blocked: looked automated",
+			"ip", s.clientIP(r), "honeypot", req.Website != "", "elapsed_ms", req.ElapsedMs)
+		writeError(w, http.StatusBadRequest, "registration_failed", "registration could not be completed")
+		return
+	}
+
 	if !s.settingBool(r.Context(), settingAllowRegister, true) {
 		writeError(w, http.StatusForbidden, "registration_closed", "registration is closed on this forum")
 		return
@@ -131,6 +155,11 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	if req.Email != "" {
 		if err := auth.ValidateEmail(req.Email); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid_email", err.Error())
+			return
+		}
+		if s.spamRules(r.Context()).EmailBlocked(req.Email) {
+			writeError(w, http.StatusBadRequest, "email_blocked",
+				"that e-mail provider is not accepted here. Please use a different address.")
 			return
 		}
 	}
@@ -549,6 +578,11 @@ func (s *Server) handleChangeEmail(w http.ResponseWriter, r *http.Request) {
 	if email != "" {
 		if err := auth.ValidateEmail(email); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid_email", err.Error())
+			return
+		}
+		if s.spamRules(r.Context()).EmailBlocked(email) {
+			writeError(w, http.StatusBadRequest, "email_blocked",
+				"that e-mail provider is not accepted here. Please use a different address.")
 			return
 		}
 	}

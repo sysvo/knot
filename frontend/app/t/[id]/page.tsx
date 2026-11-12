@@ -69,6 +69,14 @@ export default async function ThreadPage({ params, searchParams }: Props) {
         </div>
       )}
 
+      {thread.pending && (
+        <div className="panel small">
+          {isAuthor
+            ? "Your thread is waiting for review. Until a moderator publishes it, only you can see it."
+            : "This thread is held for review and is not visible to other readers."}
+        </div>
+      )}
+
       {(moderator || isAuthor) && !thread.deleted && (
         <ThreadModBar thread={thread} viewerCanModerate={moderator} viewerIsAuthor={isAuthor} />
       )}
