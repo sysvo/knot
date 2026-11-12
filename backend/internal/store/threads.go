@@ -114,7 +114,8 @@ func (s *Store) ThreadByID(ctx context.Context, id int64) (*model.Thread, error)
 }
 
 // CreateThread inserts a thread and its first post in one transaction.
-func (s *Store) CreateThread(ctx context.Context, boardID, authorID int64, title, excerpt, bodyMD, bodyHTML string) (*model.Thread, error) {
+// searchText is the plain-text rendering used by the full-text index.
+func (s *Store) CreateThread(ctx context.Context, boardID, authorID int64, title, excerpt, bodyMD, bodyHTML, searchText string) (*model.Thread, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -135,9 +136,9 @@ func (s *Store) CreateThread(ctx context.Context, boardID, authorID int64, title
 	}
 
 	postRes, err := tx.ExecContext(ctx,
-		`INSERT INTO posts (thread_id, author_id, body_md, body_html, created_at)
-		 VALUES (?, ?, ?, ?, ?)`,
-		threadID, authorID, bodyMD, bodyHTML, now)
+		`INSERT INTO posts (thread_id, author_id, body_md, body_html, search_text, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		threadID, authorID, bodyMD, bodyHTML, searchText, now)
 	if err != nil {
 		return nil, err
 	}

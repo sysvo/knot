@@ -85,7 +85,7 @@ func (s *Store) PostByID(ctx context.Context, id, viewerID int64) (*model.Post, 
 }
 
 // CreatePost appends a reply and updates the thread's counters in one tx.
-func (s *Store) CreatePost(ctx context.Context, threadID, authorID int64, bodyMD, bodyHTML string) (*model.Post, error) {
+func (s *Store) CreatePost(ctx context.Context, threadID, authorID int64, bodyMD, bodyHTML, searchText string) (*model.Post, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -94,9 +94,9 @@ func (s *Store) CreatePost(ctx context.Context, threadID, authorID int64, bodyMD
 
 	now := time.Now().Unix()
 	res, err := tx.ExecContext(ctx,
-		`INSERT INTO posts (thread_id, author_id, body_md, body_html, created_at)
-		 VALUES (?, ?, ?, ?, ?)`,
-		threadID, authorID, bodyMD, bodyHTML, now)
+		`INSERT INTO posts (thread_id, author_id, body_md, body_html, search_text, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		threadID, authorID, bodyMD, bodyHTML, searchText, now)
 	if err != nil {
 		return nil, err
 	}
@@ -117,10 +117,10 @@ func (s *Store) CreatePost(ctx context.Context, threadID, authorID int64, bodyMD
 }
 
 // UpdatePost rewrites a post's body and records the edit time.
-func (s *Store) UpdatePost(ctx context.Context, id int64, bodyMD, bodyHTML string) error {
+func (s *Store) UpdatePost(ctx context.Context, id int64, bodyMD, bodyHTML, searchText string) error {
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE posts SET body_md = ?, body_html = ?, edited_at = ? WHERE id = ?`,
-		bodyMD, bodyHTML, time.Now().Unix(), id)
+		`UPDATE posts SET body_md = ?, body_html = ?, search_text = ?, edited_at = ? WHERE id = ?`,
+		bodyMD, bodyHTML, searchText, time.Now().Unix(), id)
 	return err
 }
 

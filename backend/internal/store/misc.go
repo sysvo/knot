@@ -385,27 +385,21 @@ func (s *Store) Search(ctx context.Context, query, boardSlug string, limit int) 
 	return out, rows.Err()
 }
 
-// ftsQuery turns free text into a safe FTS5 MATCH expression. Every character
-// that FTS5 treats as an operator is dropped, so user input can never produce a
-// syntax error, and the final term is given a prefix wildcard so results appear
-// while the reader is still typing.
+// ftsQuery turns free text into a safe FTS5 MATCH expression.
+//
+// Everything that is not a letter or a digit acts as a separator rather than
+// being deleted: the index tokenises "self-hosted" as two words, so joining it
+// back into "selfhosted" would search for a token that cannot exist. Each term
+// gets a prefix wildcard so results appear while the reader is still typing, and
+// quoting means no character in the input can ever be read as an FTS operator.
 func ftsQuery(q string) string {
-	fields := strings.Fields(q)
+	fields := strings.FieldsFunc(q, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	})
+
 	terms := make([]string, 0, len(fields))
 	for _, f := range fields {
-		clean := strings.Map(func(r rune) rune {
-			if unicode.IsLetter(r) || unicode.IsDigit(r) {
-				return r
-			}
-			return -1
-		}, f)
-		if clean == "" {
-			continue
-		}
-		terms = append(terms, `"`+clean+`"*`)
-	}
-	if len(terms) == 0 {
-		return ""
+		terms = append(terms, `"`+f+`"*`)
 	}
 	return strings.Join(terms, " AND ")
 }

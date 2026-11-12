@@ -60,8 +60,9 @@ func TestFullTextSearch(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := conn.Exec(
-		`INSERT INTO posts (thread_id, author_id, body_md, created_at)
-		 VALUES (1, 1, 'Reverse proxies need the forwarded headers set.', ?)`, ts,
+		`INSERT INTO posts (thread_id, author_id, body_md, body_html, search_text, created_at)
+		 VALUES (1, 1, 'Reverse proxies need the **forwarded headers** set.', '',
+		         'Reverse proxies need the forwarded headers set.', ?)`, ts,
 	); err != nil {
 		t.Fatal(err)
 	}

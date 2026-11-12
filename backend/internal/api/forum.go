@@ -175,7 +175,7 @@ func (s *Server) handleCreateThread(w http.ResponseWriter, r *http.Request) {
 	html := s.md.Render(body)
 	excerpt := s.md.Excerpt(body)
 
-	thread, err := s.store.CreateThread(r.Context(), board.ID, u.ID, title, excerpt, body, html)
+	thread, err := s.store.CreateThread(r.Context(), board.ID, u.ID, title, excerpt, body, html, s.md.PlainText(body))
 	if err != nil {
 		writeStoreError(s, w, r, err, "could not create the thread")
 		return
@@ -345,7 +345,7 @@ func (s *Server) handleCreatePost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	post, err := s.store.CreatePost(r.Context(), id, u.ID, body, s.md.Render(body))
+	post, err := s.store.CreatePost(r.Context(), id, u.ID, body, s.md.Render(body), s.md.PlainText(body))
 	if err != nil {
 		writeStoreError(s, w, r, err, "could not post the reply")
 		return
@@ -416,7 +416,7 @@ func (s *Server) handleUpdatePost(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := s.store.UpdatePost(r.Context(), id, body, s.md.Render(body)); err != nil {
+	if err := s.store.UpdatePost(r.Context(), id, body, s.md.Render(body), s.md.PlainText(body)); err != nil {
 		writeStoreError(s, w, r, err, "could not update the post")
 		return
 	}

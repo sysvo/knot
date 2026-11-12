@@ -100,6 +100,8 @@ CREATE TABLE posts (
     author_id  INTEGER REFERENCES users (id) ON DELETE SET NULL,
     body_md    TEXT NOT NULL,
     body_html  TEXT NOT NULL DEFAULT '',
+    -- plain-text rendering, kept only so search snippets read as prose
+    search_text TEXT NOT NULL DEFAULT '',
     score      INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL,
     edited_at  INTEGER,
@@ -187,14 +189,14 @@ CREATE TRIGGER posts_search_insert AFTER INSERT ON posts BEGIN
     INSERT INTO search_index (title, body, thread_id, post_id)
     VALUES (
         (SELECT title FROM threads WHERE id = new.thread_id),
-        new.body_md,
+        new.search_text,
         new.thread_id,
         new.id
     );
 END;
 
-CREATE TRIGGER posts_search_update AFTER UPDATE OF body_md ON posts BEGIN
-    UPDATE search_index SET body = new.body_md WHERE post_id = new.id;
+CREATE TRIGGER posts_search_update AFTER UPDATE OF search_text ON posts BEGIN
+    UPDATE search_index SET body = new.search_text WHERE post_id = new.id;
 END;
 
 CREATE TRIGGER posts_search_delete AFTER DELETE ON posts BEGIN

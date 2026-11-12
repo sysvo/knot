@@ -57,12 +57,18 @@ func (r *Renderer) Render(src string) string {
 	return r.pol.Sanitize(buf.String())
 }
 
+// PlainText returns the readable text of a Markdown document, with no markup.
+// Search indexes this rather than the raw Markdown so that snippets read as
+// prose instead of showing asterisks and heading marks.
+func (r *Renderer) PlainText(src string) string {
+	return htmlToText(r.Render(src))
+}
+
 // Excerpt returns a short plain-text preview for thread lists and
-// notifications. It renders through the same pipeline as a post and then reads
-// the text out of the resulting HTML, so link targets and Markdown syntax never
-// leak into the preview.
+// notifications. It renders through the same pipeline as a post, so link
+// targets and Markdown syntax never leak into the preview.
 func (r *Renderer) Excerpt(src string) string {
-	text := htmlToText(r.Render(src))
+	text := r.PlainText(src)
 
 	const max = 220
 	runes := []rune(text)
