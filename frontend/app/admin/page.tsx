@@ -6,6 +6,7 @@ import {
   getAdminStats,
   getAdminUsers,
   getAudit,
+  getBackups,
   getBoards,
   getMailQueue,
   getMeta,
@@ -15,6 +16,7 @@ import {
 } from "@/lib/server";
 import { canModerate, isAdmin } from "@/lib/types";
 import { formatDateTime } from "@/lib/format";
+import BackupPanel from "@/components/admin/BackupPanel";
 import BoardsPanel from "@/components/admin/BoardsPanel";
 import PendingPanel from "@/components/admin/PendingPanel";
 import ReportsPanel from "@/components/admin/ReportsPanel";
@@ -96,11 +98,12 @@ export default async function AdminPage({
 }
 
 async function Overview() {
-  const [stats, reports, mail, settings] = await Promise.all([
+  const [stats, reports, mail, settings, backups] = await Promise.all([
     getAdminStats(),
     getReports(),
     getMailQueue(),
     getSettings(),
+    getBackups(),
   ]);
 
   if (!stats) {
@@ -188,6 +191,8 @@ async function Overview() {
           )}
         </div>
       )}
+
+      <BackupPanel backups={backups} />
     </div>
   );
 }

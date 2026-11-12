@@ -1,8 +1,13 @@
+import type { Metadata } from "next";
 import Link from "next/link";
 
 import { getBoards, getMeta, getThreads } from "@/lib/server";
 import ThreadList from "@/components/ThreadList";
 import Timestamp from "@/components/Timestamp";
+
+// Only the home page claims the root as its canonical: inheriting one from the
+// layout would tell a crawler that every page on the site is a duplicate of /.
+export const metadata: Metadata = { alternates: { canonical: "/" } };
 
 export default async function HomePage() {
   const [meta, boards, recent] = await Promise.all([
@@ -19,7 +24,11 @@ export default async function HomePage() {
           {meta.site_description && <p>{meta.site_description}</p>}
         </div>
         <div className="row">
-          {meta.user ? (
+          {meta.needs_setup ? (
+            <Link href="/setup" className="btn btn-primary">
+              Finish setup
+            </Link>
+          ) : meta.user ? (
             <Link href="/new" className="btn btn-primary">
               Start a thread
             </Link>

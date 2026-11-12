@@ -1,8 +1,8 @@
 # End-to-end smoke test for the knot API.
 #
-# It needs a FRESH database: the first account registered becomes the
-# administrator, and several checks depend on being able to promote other
-# users. Point a throwaway instance at an empty file, for example:
+# It needs a FRESH database: setup only succeeds while no account exists, and
+# several checks depend on being able to promote other users. Point a throwaway
+# instance at an empty file, for example:
 #
 #   $env:KNOT_DB = "$env:TEMP/knot-smoke.db"
 #   Remove-Item $env:KNOT_DB -ErrorAction SilentlyContinue
@@ -87,17 +87,38 @@ Check "meta reports site settings" {
     $m.site_name.Length -gt 0
 }
 
-Check "register first account" {
-    $r = Call POST "/api/v1/auth/register" @{ username = $adminName; email = "$adminName@example.com"; password = $password } $admin
-    $r.username -eq $adminName
+Check "fresh instance reports that it needs setup" {
+    $s = Call GET "/api/v1/setup"
+    $s.needs_setup -eq $true
 }
 
-Check "first account becomes administrator" {
-    $me = Call GET "/api/v1/auth/me" $null $admin
-    if ($me.role -ne 'admin') {
-        throw "role is '$($me.role)': this test needs a FRESH database, because it relies on the first registered account becoming the administrator"
+Check "setup creates the administrator" {
+    $r = Call POST "/api/v1/setup" @{
+        site_name = "knot smoke"
+        username  = $adminName
+        email     = "$adminName@example.com"
+        password  = $password
+    } $admin
+    $r.username -eq $adminName -and $r.role -eq 'admin'
+}
+
+Check "setup closes once an account exists" {
+    try {
+        Call POST "/api/v1/setup" @{
+            username = "late$suffix"
+            email    = "late$suffix@example.com"
+            password = $password
+        } (New-Session) | Out-Null
+        $false
     }
-    $true
+    catch {
+        $_.Exception.Response.StatusCode.value__ -eq 409
+    }
+}
+
+Check "setup is no longer offered after setup" {
+    $s = Call GET "/api/v1/setup"
+    $s.needs_setup -eq $false
 }
 
 Check "session cookie is httpOnly" {
@@ -638,6 +659,76 @@ Check "an unknown address gets the same answer as a real one" {
 Check "mail settings are restored to unconfigured" {
     $s = Call PATCH "/api/v1/admin/settings" @{ settings = @{ smtp_host = "" } } $admin
     $s.settings.smtp_host -eq ""
+}
+
+# ---- backups ----
+
+$script:backupName = $null
+
+Check "an admin can take a backup" {
+    $r = Call POST "/api/v1/admin/backups" $null $admin
+    $script:backupName = $r.archive.name
+    $r.archive.name -like 'knot-*.zip' -and $r.archive.size -gt 0
+}
+
+Check "the backup is listed with its retention setting" {
+    $b = Call GET "/api/v1/admin/backups" $null $admin
+    (@($b.archives | Where-Object { $_.name -eq $script:backupName }).Count -eq 1) -and
+    ($b.keep -ge 1)
+}
+
+Check "the backup downloads as a zip" {
+    $path = Join-Path $env:TEMP "knot-smoke-$suffix.zip"
+    try {
+        $response = Invoke-WebRequest -Method GET -Uri "$Base/api/v1/admin/backups/$script:backupName" `
+            -WebSession $admin -UseBasicParsing -OutFile $path -PassThru -ErrorAction Stop
+        $bytes = [System.IO.File]::ReadAllBytes($path)
+        ($response.Headers['Content-Type'] -eq 'application/zip') -and
+        ($bytes.Length -gt 1000) -and
+        ($bytes[0] -eq 0x50) -and
+        ($bytes[1] -eq 0x4B)
+    }
+    finally {
+        Remove-Item $path -ErrorAction SilentlyContinue
+    }
+}
+
+Check "a made-up backup name is refused" {
+    try {
+        Call GET "/api/v1/admin/backups/knot-19700101-000000.zip" $null $admin | Out-Null
+        $false
+    }
+    catch {
+        $_.Exception.Response.StatusCode.value__ -eq 404
+    }
+}
+
+Check "a backup name that is not an archive is refused" {
+    try {
+        Call GET "/api/v1/admin/backups/passwd.txt" $null $admin | Out-Null
+        $false
+    }
+    catch {
+        $_.Exception.Response.StatusCode.value__ -eq 400
+    }
+}
+
+Check "a plain member cannot list backups" {
+    try {
+        Call GET "/api/v1/admin/backups" $null $member | Out-Null
+        $false
+    }
+    catch {
+        $_.Exception.Response.StatusCode.value__ -eq 403
+    }
+}
+
+# ---- sitemap ----
+
+Check "the sitemap lists boards and threads" {
+    $s = Call GET "/api/v1/sitemap"
+    (@($s.boards).Count -ge 1) -and
+    (@($s.threads | Where-Object { $_.id -eq $script:threadId }).Count -eq 1)
 }
 
 # The CSRF probe goes last: in Windows PowerShell 5.1 a -Headers value is kept on

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -38,6 +39,12 @@ type Config struct {
 	SessionTTL    time.Duration
 	MaxUploadSize int64
 
+	// BackupDir is where automatic snapshots are written. Kept next to the
+	// database by default, which protects against corruption and mistakes but not
+	// against losing the disk; copying it elsewhere is the operator's job.
+	BackupDir  string
+	BackupKeep int
+
 	// SMTP is only the starting point: the admin panel stores its own copy in the
 	// database, which wins over this when it is set. Env variables are here so
 	// that a container can be configured without opening a browser.
@@ -63,6 +70,8 @@ func Load() (*Config, error) {
 		TrustProxy:    envBool("KNOT_TRUST_PROXY", true),
 		SessionTTL:    envDuration("KNOT_SESSION_TTL", 30*24*time.Hour),
 		MaxUploadSize: int64(envInt("KNOT_MAX_UPLOAD_MB", 8)) << 20,
+		BackupDir:     env("KNOT_BACKUP_DIR", ""),
+		BackupKeep:    envInt("KNOT_BACKUP_KEEP", 7),
 		SMTP: mail.Config{
 			Host: env("KNOT_SMTP_HOST", ""),
 			Port: envInt("KNOT_SMTP_PORT", 587),
@@ -80,6 +89,15 @@ func Load() (*Config, error) {
 	}
 	if c.MaxUploadSize <= 0 {
 		return nil, fmt.Errorf("KNOT_MAX_UPLOAD_MB must be positive")
+	}
+	if c.BackupKeep < 0 {
+		c.BackupKeep = 0
+	}
+
+	// Backups live beside the database unless told otherwise, which means a single
+	// volume to mount and a single volume to copy.
+	if c.BackupDir == "" {
+		c.BackupDir = filepath.Join(filepath.Dir(c.DatabasePath), "backups")
 	}
 
 	c.Providers = providers()
@@ -152,6 +170,7 @@ func (c *Config) LogSummary(log *slog.Logger) {
 		"public_url", c.PublicURL,
 		"db", c.DatabasePath,
 		"uploads", c.UploadDir,
+		"backups", c.BackupDir,
 		"secure_cookies", c.SecureCookies,
 		"oauth_providers", strings.Join(names, ","),
 		"mail", mail,

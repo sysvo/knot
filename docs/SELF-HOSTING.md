@@ -16,14 +16,11 @@ Edit `.env`:
 ```ini
 KNOT_PUBLIC_URL=https://forum.example.com
 KNOT_DOMAIN=forum.example.com
-KNOT_ADMIN_USERNAME=admin
-KNOT_ADMIN_EMAIL=you@example.com
-KNOT_ADMIN_PASSWORD=a long passphrase you will keep
 ```
 
 `KNOT_PUBLIC_URL` must be exactly the address readers type. It is baked into
-OAuth callbacks and magic links, so a mismatch means those links point somewhere
-that does not work.
+OAuth callbacks, magic links, canonical links and the sitemap, so a mismatch
+means those links point somewhere that does not work.
 
 Then:
 
@@ -31,9 +28,16 @@ Then:
 docker compose up -d --build
 ```
 
-The first start creates the database, applies migrations and creates the
-administrator. That takes a few seconds; the `api` container reports healthy when
-it is done.
+The first start creates the database and applies migrations. That takes a few
+seconds; the `api` container reports healthy when it is done. Open the site: it
+shows a setup page asking for the forum's name, the administrator account and,
+if you have one, a mail relay. Filling that in is the whole first run.
+
+Setup is open only while the instance has no accounts at all. As soon as the
+administrator exists it closes, so the page cannot be used to claim a forum
+somebody else already set up. To provision an administrator without a browser,
+set `KNOT_ADMIN_USERNAME`, `KNOT_ADMIN_EMAIL` and `KNOT_ADMIN_PASSWORD` before
+the first start instead; those are read once on an empty database.
 
 Caddy asks Let's Encrypt for a certificate as soon as DNS resolves. Watch it:
 
@@ -60,10 +64,51 @@ docker compose down               # stop (keeps the data volumes)
 
 ### Backups
 
-Two things matter: the database and the uploaded images. They share one volume.
+knot backs itself up. Once a day it takes a snapshot of the database and every
+upload into one zip, and keeps the newest `KNOT_BACKUP_KEEP` archives (7 by
+default; set `0` to turn the schedule off). Administration → Overview lists them,
+takes one on demand, and downloads one.
 
-SQLite runs in WAL mode, so copying `knot.db` on its own can miss the most recent
-writes. Stop the API first and copy the whole volume:
+```bash
+docker compose exec api ls -l /data/backups
+```
+
+They are written to `KNOT_BACKUP_DIR`, which defaults to a `backups` directory
+beside the database — inside the `knot-data` volume, so they survive a rebuild of
+the containers. They do not survive losing the volume, which is why you should
+copy the newest one off the machine:
+
+```bash
+docker compose cp api:/data/backups ./backups
+```
+
+The snapshot is taken with `VACUUM INTO`, so it is consistent while people keep
+posting: there is no need to stop the API to back up.
+
+To restore, with the stack stopped:
+
+```bash
+docker compose down
+docker run --rm \
+  -v knot_knot-data:/data \
+  -v "$PWD/backups:/restore:ro" \
+  alpine sh -c 'apk add --no-cache unzip >/dev/null &&
+    rm -rf /data/knot.db /data/uploads &&
+    unzip -o /restore/knot-20261112-234221.zip -d /data'
+docker compose up -d
+```
+
+Use a real archive name from the directory listing. The zip holds `knot.db`, an
+`uploads/` directory and a `manifest.json` describing what it is; `manifest.json`
+ends up in `/data` after the restore and can be deleted.
+
+An untested backup is not a backup. Restore one into a scratch stack once, and
+check that logging in and reading an old thread both work.
+
+#### A copy of the whole volume
+
+Sometimes you want everything at once, including the archived backups. Stop the
+API first, so the WAL is checkpointed and no write is in flight:
 
 ```bash
 docker compose stop api
@@ -78,18 +123,6 @@ docker compose start api
 
 The volume name is `<compose project>_<volume>`, which is `knot_knot-data` unless
 you renamed the project. `docker volume ls` will tell you.
-
-To restore, with the stack stopped:
-
-```bash
-docker compose down
-docker run --rm -v knot_knot-data:/data -v "$PWD:/backup" alpine \
-  sh -c 'rm -rf /data/* && tar xzf /backup/knot-2026-11-12.tgz -C /data'
-docker compose up -d
-```
-
-An untested backup is not a backup. Restore one into a scratch stack once, and
-check that logging in and reading an old thread both work.
 
 ### Upgrading
 

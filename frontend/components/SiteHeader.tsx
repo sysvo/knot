@@ -19,10 +19,12 @@ export default function SiteHeader({
   siteName,
   user,
   unread,
+  needsSetup = false,
 }: {
   siteName: string;
   user: Self | null;
   unread: number;
+  needsSetup?: boolean;
 }) {
   const router = useRouter();
   const [signingOut, setSigningOut] = useState(false);
@@ -105,7 +107,7 @@ export default function SiteHeader({
                 </div>
               </details>
             </>
-          ) : (
+          ) : needsSetup ? null : (
             <>
               <Link href="/login" className="btn btn-ghost btn-sm">
                 Sign in

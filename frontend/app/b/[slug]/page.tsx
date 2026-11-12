@@ -14,7 +14,20 @@ type Props = {
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const { slug } = await params;
   const board = await getBoard(slug);
-  return board ? { title: board.name, description: board.description } : { title: "Board" };
+  if (!board) return { title: "Board" };
+
+  const description = board.description || undefined;
+  return {
+    title: board.name,
+    description,
+    alternates: { canonical: `/b/${board.slug}` },
+    openGraph: {
+      type: "website",
+      title: board.name,
+      description,
+      url: `/b/${board.slug}`,
+    },
+  };
 }
 
 export default async function BoardPage({ params, searchParams }: Props) {

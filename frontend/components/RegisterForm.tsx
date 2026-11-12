@@ -75,7 +75,7 @@ export default function RegisterForm({
             required
             minLength={3}
             maxLength={32}
-            pattern="[A-Za-z0-9][A-Za-z0-9_-]{1,30}[A-Za-z0-9]"
+            pattern="[A-Za-z0-9][A-Za-z0-9_\-]{1,30}[A-Za-z0-9]"
           />
           <span className="hint">3–32 characters. Letters, numbers, dash or underscore.</span>
         </div>

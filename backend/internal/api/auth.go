@@ -79,6 +79,10 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// An instance with no accounts has never been set up, and the frontend says
+	// so on every page rather than letting a stranger guess from a stale home page.
+	needsSetup := s.needsSetup(r.Context())
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"site_name":                  valueOr(all, settingSiteName, "knot"),
 		"site_description":           valueOr(all, settingSiteDescription, ""),
@@ -89,6 +93,7 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 		"mail_enabled":               s.smtpConfig(r.Context()).Enabled(),
 		"max_upload_bytes":           s.cfg.MaxUploadSize,
 		"version":                    Version,
+		"needs_setup":                needsSetup,
 		"user":                       self,
 	})
 }
@@ -124,6 +129,13 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	// small event behind one address, and still nothing to a spam operator. The
 	// honeypot and the review queue are what actually stop the bots.
 	if !s.allow(w, r, "register", 20, 12) {
+		return
+	}
+	// The setup page creates the first account; registration is for everyone after
+	// that. Opening it earlier would let a stranger take the instance before its
+	// owner got to the wizard.
+	if s.needsSetup(r.Context()) {
+		writeError(w, http.StatusForbidden, "not_set_up", "this forum has not been set up yet")
 		return
 	}
 	var req registerRequest

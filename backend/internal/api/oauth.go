@@ -100,6 +100,13 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, s.cfg.PublicURL+"/login?error="+url.QueryEscape(reason), http.StatusFound)
 	}
 
+	// Signing in with a provider creates an account when there is none, which is
+	// setup's job. Send the first visitor to the wizard instead.
+	if s.needsSetup(r.Context()) {
+		http.Redirect(w, r, s.cfg.PublicURL+"/setup", http.StatusFound)
+		return
+	}
+
 	if errParam := r.URL.Query().Get("error"); errParam != "" {
 		// The user pressed "cancel" on the consent screen, most likely.
 		s.log.Info("oauth denied", "provider", provider.Name, "error", errParam)

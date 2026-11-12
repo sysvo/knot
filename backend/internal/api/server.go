@@ -40,13 +40,13 @@ type Server struct {
 // New builds a Server.
 func New(cfg *config.Config, st *store.Store, logger *slog.Logger) *Server {
 	return &Server{
-		cfg:     cfg,
-		store:   st,
-		log:     logger,
-		md:      markdown.New(),
-		mail:    mail.New(logger),
-		limiter: ratelimit.New(),
-		started: time.Now(),
+		cfg:      cfg,
+		store:    st,
+		log:      logger,
+		md:       markdown.New(),
+		mail:     mail.New(logger),
+		limiter:  ratelimit.New(),
+		started:  time.Now(),
 		mailKick: make(chan struct{}, 1),
 	}
 }
@@ -58,6 +58,9 @@ func (s *Server) Handler() http.Handler {
 	// ---- public ----
 	mux.HandleFunc("GET /api/v1/health", s.handleHealth)
 	mux.HandleFunc("GET /api/v1/meta", s.handleMeta)
+	mux.HandleFunc("GET /api/v1/sitemap", s.handleSitemap)
+	mux.HandleFunc("GET /api/v1/setup", s.handleSetupStatus)
+	mux.HandleFunc("POST /api/v1/setup", s.handleSetup)
 
 	// ---- authentication ----
 	mux.HandleFunc("POST /api/v1/auth/register", s.handleRegister)
@@ -122,6 +125,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/admin/mail", s.handleAdminMail)
 	mux.HandleFunc("POST /api/v1/admin/mail/{id}/retry", s.handleAdminRetryMail)
 	mux.HandleFunc("DELETE /api/v1/admin/mail/{id}", s.handleAdminDeleteMail)
+	mux.HandleFunc("GET /api/v1/admin/backups", s.handleAdminBackups)
+	mux.HandleFunc("POST /api/v1/admin/backups", s.handleAdminCreateBackup)
+	mux.HandleFunc("GET /api/v1/admin/backups/{name}", s.handleAdminDownloadBackup)
 	mux.HandleFunc("POST /api/v1/admin/boards", s.handleAdminCreateBoard)
 	mux.HandleFunc("PATCH /api/v1/admin/boards/{id}", s.handleAdminUpdateBoard)
 	mux.HandleFunc("DELETE /api/v1/admin/boards/{id}", s.handleAdminDeleteBoard)
@@ -224,6 +230,7 @@ func (s *Server) housekeeping(ctx context.Context) {
 		s.log.Warn("prune mail outbox", "err", err)
 	}
 	s.limiter.Purge(time.Hour)
+	s.maybeBackup(ctx)
 }
 
 // handleServeUpload serves a stored attachment from disk. Files are served with

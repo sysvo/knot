@@ -19,7 +19,26 @@ type Props = {
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const { id } = await params;
   const data = await getThread(Number.parseInt(id, 10));
-  return data ? { title: data.thread.title } : { title: "Thread" };
+  if (!data) return { title: "Thread" };
+
+  const { thread } = data;
+  const description = thread.excerpt || undefined;
+
+  // Threads are what people paste into chat, so they carry the full card rather
+  // than inheriting the site title and looking like a dead link.
+  return {
+    title: thread.title,
+    description,
+    alternates: { canonical: `/t/${thread.id}` },
+    openGraph: {
+      type: "article",
+      title: thread.title,
+      description,
+      url: `/t/${thread.id}`,
+      publishedTime: new Date(thread.created_at * 1000).toISOString(),
+      modifiedTime: new Date(thread.last_post_at * 1000).toISOString(),
+    },
+  };
 }
 
 export default async function ThreadPage({ params, searchParams }: Props) {

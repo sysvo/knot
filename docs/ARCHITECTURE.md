@@ -102,6 +102,21 @@ for both words and no input can be read as an FTS operator.
 - **Timing**: a missing account still performs a password hash comparison, so
   "no such user" and "wrong password" take the same time.
 
+### Setup
+
+The first-run wizard creates the administrator and the site settings. Its gate
+is **"the users table is empty"**, checked inside the same transaction as the
+insert — not a `setup_complete` flag. A flag is a second source of truth that can
+disagree with the data, and the failure is silent: a dropped row, a restored
+database from before the flag existed, or a partially applied migration all leave
+an instance that either refuses setup it needs or offers setup it should not. The
+count cannot drift from the accounts it counts. Two setup requests arriving
+together serialise on the transaction, so the second gets `409` rather than two
+administrators.
+
+Deleting every account legitimately reopens setup. That is the honest reading of
+"nobody can administer this instance", and it matches what the condition means.
+
 ## Spam defence
 
 An open registration form on a public forum is an invitation. The rules are
@@ -161,6 +176,31 @@ Password reset uses the same single-use `login_tokens` table as magic links, wit
 its own `purpose`, and consumes the token only when the new password is actually
 submitted — a link consumed on open gets eaten by mail scanners.
 
+## Backups
+
+A backup is one zip holding `knot.db`, the whole `uploads/` directory and a
+`manifest.json` that records the version and the time. One file is easy to copy
+off a server, and it carries its own explanation when it is opened a year later.
+
+- **`VACUUM INTO` rather than a file copy.** SQLite runs in WAL mode, so the
+  database on disk is the main file plus a write-ahead log; copying the file alone
+  loses recent commits, and copying both without a lock can catch a torn state.
+  `VACUUM INTO` takes a consistent snapshot while writers continue, and leaves a
+  compacted database rather than one with a log beside it.
+- **Scheduled on the housekeeping tick.** Retention is "keep the newest N", the
+  snapshot is taken at most once a day, and the same loop already purges sessions
+  and old mail. A second timer for one job a day would be more moving parts than
+  the job is worth.
+- **Archive entry names use forward slashes.** Built with `filepath.Join` on
+  Windows the entries come out as `uploads\picture.png`, which extracts on Linux
+  as a single file with a backslash in its name — a backup that silently restores
+  zero uploads for anyone migrating away from Windows.
+- **`KNOT_BACKUP_KEEP=0` disables scheduling rather than meaning "keep none".**
+  Storage-managed setups should be able to say "I take my own backups" without
+  the app deleting what is there.
+- **Downloads are admin-only and `no-store`.** An archive holds every password
+  hash and every queued message body.
+
 ## Security posture
 
 - CSRF: `SameSite=Lax` cookies plus an `Origin` check on every unsafe method.
@@ -190,6 +230,11 @@ rather than gaps:
 - **No private messages.** They double the moderation surface and the data model.
 - **No multi-tenancy.** One instance per community keeps the schema, the
   settings and the backup story simple.
+- **No metrics endpoint.** `/api/v1/health` answers "is it up" for a container
+  healthcheck and the admin overview answers "what is in it". A Prometheus
+  endpoint means a scrape contract to keep compatible, and an instance small
+  enough to self-host is usually watched by hand or by whatever supervises the
+  container.
 
 ## Repository layout
 

@@ -16,8 +16,10 @@ cd frontend && npm install && npm run dev
 ```
 
 The database lands in `backend/data/` and is created on first start. Delete that
-folder to start over. The first account to register becomes the administrator,
-which is how you get into `/admin`.
+folder to start over. The first visit to `localhost:3000` offers a setup page that
+creates the administrator, which is how you get into `/admin`. If you deleted the
+database you get that page again; on an instance that already has accounts it
+redirects away.
 
 ## Before you open a pull request
 

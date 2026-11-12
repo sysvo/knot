@@ -2,12 +2,18 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 import { getMeta, getNotifications } from "@/lib/server";
+import { siteURL } from "@/lib/site";
+import SetupBanner from "@/components/SetupBanner";
 import SiteHeader from "@/components/SiteHeader";
 import SiteFooter from "@/components/SiteFooter";
 
 export async function generateMetadata(): Promise<Metadata> {
-  const meta = await getMeta();
+  // Relative URLs in OpenGraph tags and canonicals resolve against this base, so
+  // it has to be the same address the sitemap and robots.txt use — otherwise a
+  // shared link advertises a host the reader cannot reach.
+  const [meta, base] = await Promise.all([getMeta(), siteURL()]);
   return {
+    metadataBase: new URL(base),
     title: {
       default: meta.site_name,
       template: `%s · ${meta.site_name}`,
@@ -15,7 +21,16 @@ export async function generateMetadata(): Promise<Metadata> {
     description: meta.site_description,
     applicationName: meta.site_name,
     icons: { icon: "/favicon.svg" },
-    robots: { index: true, follow: true },
+    // Shared links get a title, a description and a site name instead of a bare URL.
+    openGraph: {
+      type: "website",
+      siteName: meta.site_name,
+      title: meta.site_name,
+      description: meta.site_description,
+      url: "/",
+    },
+    twitter: { card: "summary" },
+    robots: meta.needs_setup ? { index: false, follow: false } : { index: true, follow: true },
   };
 }
 
@@ -49,7 +64,13 @@ export default async function RootLayout({
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
       </head>
       <body>
-        <SiteHeader siteName={meta.site_name} user={meta.user} unread={unread} />
+        {meta.needs_setup && <SetupBanner siteName={meta.site_name} />}
+        <SiteHeader
+          siteName={meta.site_name}
+          user={meta.user}
+          unread={unread}
+          needsSetup={meta.needs_setup}
+        />
         <main className="site-main">
           <div className="container">{children}</div>
         </main>

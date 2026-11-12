@@ -181,6 +181,49 @@ func (s *Store) CountUsers(ctx context.Context) (int64, error) {
 	return n, err
 }
 
+// CreateFirstAdmin creates the initial administrator, but only while the users
+// table is empty.
+//
+// The check and the insert share one transaction so that two setup requests
+// arriving together cannot both decide they were first. An instance that already
+// has accounts can never be claimed through the setup endpoint.
+func (s *Store) CreateFirstAdmin(ctx context.Context, username, email, passwordHash string, verified bool) (*Account, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	var existing int64
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM users`).Scan(&existing); err != nil {
+		return nil, err
+	}
+	if existing > 0 {
+		return nil, ErrConflict
+	}
+
+	res, err := tx.ExecContext(ctx,
+		`INSERT INTO users (username, email, password_hash, role, status, email_verified, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		username, nullableString(email), nullableString(passwordHash),
+		model.RoleAdmin, model.StatusActive, boolInt(verified), time.Now().Unix(),
+	)
+	if isUniqueViolation(err, "username") {
+		return nil, fmt.Errorf("%w: username %q", ErrConflict, username)
+	}
+	if err != nil {
+		return nil, err
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return s.AccountByID(ctx, id)
+}
+
 // ListUsers returns accounts matching q (username or e-mail), newest first.
 func (s *Store) ListUsers(ctx context.Context, q string, limit, offset int) ([]model.User, int64, error) {
 	where := ""

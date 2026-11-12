@@ -10,6 +10,7 @@ export const metadata: Metadata = { title: "Create an account" };
 export default async function RegisterPage() {
   const meta = await getMeta();
   if (meta.user) redirect("/");
+  if (meta.needs_setup) redirect("/setup");
 
   if (!meta.allow_registration) {
     return (

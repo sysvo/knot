@@ -329,6 +329,65 @@ func (s *Store) CountAdmins(ctx context.Context) (int64, error) {
 
 // ---- Search ----
 
+// SitemapThread is one thread URL, without the joins a full thread listing needs.
+type SitemapThread struct {
+	ID         int64 `json:"id"`
+	LastPostAt int64 `json:"last_post_at"`
+}
+
+// SitemapBoard is one board URL.
+type SitemapBoard struct {
+	Slug       string `json:"slug"`
+	LastPostAt int64  `json:"last_post_at"`
+}
+
+// SitemapEntries returns the public URLs worth indexing.
+func (s *Store) SitemapEntries(ctx context.Context, limit int) ([]SitemapThread, []SitemapBoard, error) {
+	threadRows, err := s.db.QueryContext(ctx, `
+		SELECT id, last_post_at FROM threads
+		WHERE deleted_at IS NULL AND approved_at IS NOT NULL
+		ORDER BY last_post_at DESC
+		LIMIT ?`, limit)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer threadRows.Close()
+
+	threads := []SitemapThread{}
+	for threadRows.Next() {
+		var t SitemapThread
+		if err := threadRows.Scan(&t.ID, &t.LastPostAt); err != nil {
+			return nil, nil, err
+		}
+		threads = append(threads, t)
+	}
+	if err := threadRows.Err(); err != nil {
+		return nil, nil, err
+	}
+
+	boardRows, err := s.db.QueryContext(ctx, `
+		SELECT b.slug, COALESCE(max(t.last_post_at), b.created_at)
+		FROM boards b
+		LEFT JOIN threads t ON t.board_id = b.id
+		     AND t.deleted_at IS NULL AND t.approved_at IS NOT NULL
+		GROUP BY b.id
+		ORDER BY b.position, b.name`)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer boardRows.Close()
+
+	boards := []SitemapBoard{}
+	for boardRows.Next() {
+		var b SitemapBoard
+		if err := boardRows.Scan(&b.Slug, &b.LastPostAt); err != nil {
+			return nil, nil, err
+		}
+		boards = append(boards, b)
+	}
+	return threads, boards, boardRows.Err()
+}
+
 // Search runs a full-text query. boardSlug restricts results to one board.
 func (s *Store) Search(ctx context.Context, query, boardSlug string, limit int) ([]model.SearchHit, error) {
 	match := ftsQuery(query)

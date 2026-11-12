@@ -20,6 +20,9 @@ services:
       KNOT_DB: /data/knot.db
       KNOT_UPLOAD_DIR: /data/uploads
       KNOT_PUBLIC_URL: ${KNOT_PUBLIC_URL:-http://localhost}
+      # Backups default to /data/backups, on the same volume as the database.
+      KNOT_BACKUP_DIR: ${KNOT_BACKUP_DIR:-}
+      KNOT_BACKUP_KEEP: ${KNOT_BACKUP_KEEP:-7}
       KNOT_ADMIN_USERNAME: ${KNOT_ADMIN_USERNAME:-}
       KNOT_ADMIN_EMAIL: ${KNOT_ADMIN_EMAIL:-}
       KNOT_ADMIN_PASSWORD: ${KNOT_ADMIN_PASSWORD:-}
@@ -49,6 +52,8 @@ services:
     restart: unless-stopped
     environment:
       KNOT_API_URL: http://api:8080
+      # Used for canonical links, OpenGraph tags, robots.txt and the sitemap.
+      KNOT_PUBLIC_URL: ${KNOT_PUBLIC_URL:-http://localhost}
     depends_on:
       api:
         condition: service_healthy

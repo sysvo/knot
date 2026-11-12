@@ -8,6 +8,7 @@ import { cookies } from "next/headers";
 import type {
   AdminStats,
   AuditEntry,
+  Backups,
   Board,
   MailQueue,
   Meta,
@@ -58,7 +59,20 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   return payload as T;
 }
 
-/** serverApi calls the API with the caller's session attached. */
+/**
+ * publicApi fetches data that needs no session. Metadata routes such as the
+ * sitemap must not call cookies(), so they use this rather than serverApi.
+ */
+export async function publicApi<T>(path: string, fallback: T): Promise<T> {
+  try {
+    const response = await fetch(`${API_URL}${path}`, { cache: "no-store" });
+    if (!response.ok) return fallback;
+    return (await response.json()) as T;
+  } catch {
+    return fallback;
+  }
+}
+
 export async function serverApi<T>(path: string, options: RequestOptions = {}): Promise<T> {
   return request<T>(path, options);
 }
@@ -90,6 +104,7 @@ export async function getMeta(): Promise<Meta> {
     mail_enabled: false,
     max_upload_bytes: 0,
     version: "dev",
+    needs_setup: false,
     user: null,
   });
 }
@@ -239,6 +254,14 @@ export async function getMailQueue(): Promise<MailQueue> {
     return await request<MailQueue>("/api/v1/admin/mail");
   } catch {
     return { configured: false, pending: 0, failed: 0, max_attempts: 8, items: [] };
+  }
+}
+
+export async function getBackups(): Promise<Backups> {
+  try {
+    return await request<Backups>("/api/v1/admin/backups");
+  } catch {
+    return { archives: [], keep: 0, dir: "" };
   }
 }
 

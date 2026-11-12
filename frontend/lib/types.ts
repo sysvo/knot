@@ -173,7 +173,23 @@ export interface Meta {
   mail_enabled: boolean;
   max_upload_bytes: number;
   version: string;
+  /** True while the instance has no accounts at all. */
+  needs_setup: boolean;
   user: Self | null;
+}
+
+/** One archive in the backup directory. */
+export interface BackupArchive {
+  name: string;
+  size: number;
+  created_at: number;
+}
+
+export interface Backups {
+  archives: BackupArchive[];
+  /** How many archives are kept; 0 disables automatic backups. */
+  keep: number;
+  dir: string;
 }
 
 export interface AdminStats {
