@@ -1,0 +1,76 @@
+# knot: a small self-hosted forum.
+#
+#   cp .env.example .env   # edit it first
+#   docker compose up -d --build
+#
+# Caddy is the only service that publishes ports; the API and web containers are
+# reachable only inside the compose network.
+
+name: knot
+
+services:
+  api:
+    build:
+      context: ./backend
+      args:
+        VERSION: ${KNOT_VERSION:-dev}
+    restart: unless-stopped
+    environment:
+      KNOT_ADDR: ":8080"
+      KNOT_DB: /data/knot.db
+      KNOT_UPLOAD_DIR: /data/uploads
+      KNOT_PUBLIC_URL: ${KNOT_PUBLIC_URL:-http://localhost}
+      KNOT_ADMIN_USERNAME: ${KNOT_ADMIN_USERNAME:-}
+      KNOT_ADMIN_EMAIL: ${KNOT_ADMIN_EMAIL:-}
+      KNOT_ADMIN_PASSWORD: ${KNOT_ADMIN_PASSWORD:-}
+      KNOT_LOG_LEVEL: ${KNOT_LOG_LEVEL:-info}
+      KNOT_SMTP_HOST: ${KNOT_SMTP_HOST:-}
+      KNOT_SMTP_PORT: ${KNOT_SMTP_PORT:-587}
+      KNOT_SMTP_USER: ${KNOT_SMTP_USER:-}
+      KNOT_SMTP_PASS: ${KNOT_SMTP_PASS:-}
+      KNOT_SMTP_FROM: ${KNOT_SMTP_FROM:-}
+      KNOT_GITHUB_CLIENT_ID: ${KNOT_GITHUB_CLIENT_ID:-}
+      KNOT_GITHUB_CLIENT_SECRET: ${KNOT_GITHUB_CLIENT_SECRET:-}
+      KNOT_DISCORD_CLIENT_ID: ${KNOT_DISCORD_CLIENT_ID:-}
+      KNOT_DISCORD_CLIENT_SECRET: ${KNOT_DISCORD_CLIENT_SECRET:-}
+    volumes:
+      # Holds knot.db and the uploaded images. Back this up.
+      - knot-data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/api/v1/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  web:
+    build:
+      context: ./frontend
+    restart: unless-stopped
+    environment:
+      KNOT_API_URL: http://api:8080
+    depends_on:
+      api:
+        condition: service_healthy
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      KNOT_DOMAIN: ${KNOT_DOMAIN:-localhost}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - api
+      - web
+
+volumes:
+  knot-data:
+  caddy-data:
+  caddy-config:
