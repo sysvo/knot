@@ -34,14 +34,15 @@ export default async function BoardPage({ params, searchParams }: Props) {
   const { slug } = await params;
   const { page: pageParam, sort = "recent" } = await searchParams;
 
-  const board = await getBoard(slug);
-  if (!board) notFound();
-
   const page = Number.parseInt(pageParam ?? "1", 10) || 1;
-  const [meta, { threads, page: info }] = await Promise.all([
+  // All three are independent, so they go out together: awaiting the board first
+  // made the page pay for two stages instead of the slower of two requests.
+  const [board, meta, { threads, page: info }] = await Promise.all([
+    getBoard(slug),
     getMeta(),
     getThreads({ board: slug, page, sort }),
   ]);
+  if (!board) notFound();
 
   return (
     <div className="stack">

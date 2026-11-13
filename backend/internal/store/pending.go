@@ -20,7 +20,8 @@ type PendingPost struct {
 // approving the thread publishes both.
 func (s *Store) PendingThreads(ctx context.Context, limit int) ([]model.Thread, error) {
 	rows, err := s.db.QueryContext(ctx,
-		threadSelect()+` WHERE t.approved_at IS NULL AND t.deleted_at IS NULL
+		threadColumns()+` FROM threads t`+threadJoins+`
+		 WHERE t.approved_at IS NULL AND t.deleted_at IS NULL
 		 ORDER BY t.created_at, t.id LIMIT ?`, limit)
 	if err != nil {
 		return nil, err

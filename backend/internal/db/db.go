@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"time"
 
@@ -18,12 +19,16 @@ var migrationFS embed.FS
 
 // Open opens (and creates) a SQLite database at path.
 //
-// The connection pool is limited to a single connection on purpose. SQLite
-// serialises writers anyway, and with one connection every statement runs on a
-// warm connection with no risk of SQLITE_BUSY or of a deferred transaction
-// failing to upgrade to a write lock. Individual statements take tens of
-// microseconds, so this comfortably serves a forum; see docs/ARCHITECTURE.md
-// for how to scale beyond it.
+// WAL lets readers run while a writer commits, so the pool holds several
+// connections: one request no longer queues behind another request's queries. What
+// must stay serialised is the writers, and that is handled inside SQLite rather
+// than by limiting the pool.
+//
+// _txlock=immediate is the part that makes it safe. A deferred transaction that
+// reads before it writes has to upgrade its lock, and SQLite refuses that upgrade
+// immediately instead of waiting when another writer got there first — the classic
+// "database is locked" on a busy forum. Taking the write lock at BEGIN turns that
+// into a wait bounded by busy_timeout.
 func Open(path string) (*sql.DB, error) {
 	if dir := filepath.Dir(path); dir != "" && dir != "." {
 		if err := os.MkdirAll(dir, 0o750); err != nil {
@@ -32,19 +37,47 @@ func Open(path string) (*sql.DB, error) {
 	}
 
 	dsn := fmt.Sprintf(
-		"file:%s?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(1)",
+		"file:%s?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(1)&_txlock=immediate",
 		path,
 	)
 	conn, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
-	conn.SetMaxOpenConns(1)
-	conn.SetConnMaxLifetime(0)
+	conns := max(4, runtime.NumCPU())
+	conn.SetMaxOpenConns(conns)
+	conn.SetMaxIdleConns(conns)
+	conn.SetConnMaxLifetime(30 * time.Minute)
 
 	if err := conn.Ping(); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("open database %s: %w", path, err)
+	}
+	return conn, nil
+}
+
+// OpenIsolated opens a second, single-connection handle.
+//
+// It exists for work that holds a long read transaction — a backup copying the
+// database — so that work cannot occupy a connection the request path needs.
+//
+// It is not opened with query_only: VACUUM INTO writes its snapshot to a separate
+// file, and SQLite rejects the statement outright on a read-only connection. What
+// matters here is the dedicated connection, not the permission.
+func OpenIsolated(path string) (*sql.DB, error) {
+	dsn := fmt.Sprintf(
+		"file:%s?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)",
+		path,
+	)
+	conn, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("open isolated database: %w", err)
+	}
+	conn.SetMaxOpenConns(1)
+	conn.SetMaxIdleConns(1)
+	if err := conn.Ping(); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("open isolated database %s: %w", path, err)
 	}
 	return conn, nil
 }

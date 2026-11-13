@@ -12,7 +12,7 @@ import (
 
 // newTestStore opens a real database with the embedded migrations, so the FTS5
 // triggers and the snippet() call are exercised as they are in production.
-func newTestStore(t *testing.T) *Store {
+func newTestStore(t testing.TB) *Store {
 	t.Helper()
 	conn, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {

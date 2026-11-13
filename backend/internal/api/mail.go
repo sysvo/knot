@@ -29,7 +29,7 @@ const (
 func (s *Server) smtpConfig(ctx context.Context) mail.Config {
 	cfg := s.cfg.SMTP
 
-	all, err := s.store.Settings(ctx)
+	all, err := s.settings(ctx)
 	if err != nil {
 		s.log.Error("read mail settings", "err", err)
 		return cfg

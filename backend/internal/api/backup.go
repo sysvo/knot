@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sysvo/knot/internal/backup"
+	"github.com/sysvo/knot/internal/db"
 )
 
 // backupNameRE is the only shape of file name the download endpoint will serve,
@@ -79,10 +80,21 @@ func (s *Server) handleAdminDownloadBackup(w http.ResponseWriter, r *http.Reques
 }
 
 // createBackup writes one archive and returns its description.
+//
+// The snapshot runs on its own connection, opened for the copy and closed after.
+// VACUUM INTO holds a read transaction for as long as the file takes to write, and
+// on the shared pool that meant every request waiting behind it — once a day, and
+// again whenever an admin clicks the button.
 func (s *Server) createBackup(ctx context.Context) (backup.Archive, error) {
+	db, err := db.OpenIsolated(s.cfg.DatabasePath)
+	if err != nil {
+		return backup.Archive{}, err
+	}
+	defer db.Close()
+
 	now := time.Now()
 	name := backup.Name(now)
-	size, err := backup.Create(ctx, s.store.DB(), s.cfg.UploadDir,
+	size, err := backup.Create(ctx, db, s.cfg.UploadDir,
 		filepath.Join(s.cfg.BackupDir, name), Version)
 	if err != nil {
 		return backup.Archive{}, err

@@ -6,6 +6,12 @@ import type { NextConfig } from "next";
 //
 // In the container image a reverse proxy routes /api and /uploads straight to
 // the API, so these rewrites are mostly a development convenience.
+//
+// This value is read at BUILD time — the destination is baked into the route
+// manifest — while lib/server.ts reads KNOT_API_URL at run time. Building an image
+// without the build arg and then running it with a different KNOT_API_URL therefore
+// produces pages that render and browser calls that fail with ECONNREFUSED. Set it
+// as a build arg (the Dockerfile accepts KNOT_API_URL) rather than only at run time.
 const apiUrl = process.env.KNOT_API_URL ?? "http://localhost:8080";
 
 // Headers for the HTML application. The API sets its own on its own responses, and

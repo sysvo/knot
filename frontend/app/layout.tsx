@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 
-import { getMeta, getNotifications } from "@/lib/server";
+import { getMeta } from "@/lib/server";
 import { SITE_URL } from "@/lib/site";
 import SetupBanner from "@/components/SetupBanner";
 import SiteHeader from "@/components/SiteHeader";
@@ -55,7 +55,6 @@ export default async function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   const meta = await getMeta();
-  const { unread } = meta.user ? await getNotifications() : { unread: 0 };
 
   return (
     <html lang="en" suppressHydrationWarning>
@@ -67,7 +66,7 @@ export default async function RootLayout({
         <SiteHeader
           siteName={meta.site_name}
           user={meta.user}
-          unread={unread}
+          unread={meta.unread}
           needsSetup={meta.needs_setup}
         />
         <main className="site-main">

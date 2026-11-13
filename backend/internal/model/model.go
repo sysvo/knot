@@ -93,7 +93,7 @@ type Post struct {
 	ID       int64  `json:"id"`
 	ThreadID int64  `json:"thread_id"`
 	Author   *User  `json:"author"`
-	BodyMD   string `json:"body_md"`
+	BodyMD   string `json:"body_md,omitempty"`
 	BodyHTML string `json:"body_html"`
 	Score    int64  `json:"score"`
 	MyVote   int    `json:"my_vote"`

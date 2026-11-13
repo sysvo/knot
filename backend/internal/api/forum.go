@@ -21,6 +21,15 @@ func canEdit(u *model.User, authorID *int64) bool {
 	return u.CanModerate() || *authorID == u.ID
 }
 
+// authorIDOf is canEdit's second argument for a post's author.
+func authorIDOf(author *model.User) *int64 {
+	if author == nil {
+		return nil
+	}
+	id := author.ID
+	return &id
+}
+
 // ---- boards ----
 
 func (s *Server) handleListBoards(w http.ResponseWriter, r *http.Request) {
@@ -121,10 +130,20 @@ func (s *Server) handleGetThread(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The Markdown source is only needed to open the editor, so it is sent only to
+	// readers who may edit. Everyone else already has the rendered HTML; shipping
+	// the source too doubled the size of every thread page for no purpose.
+	for i := range posts {
+		if !canEdit(viewer, authorIDOf(posts[i].Author)) {
+			posts[i].BodyMD = ""
+		}
+	}
+
 	// Only count a read once the thread actually rendered, and never for
-	// something that is still waiting for review.
+	// something that is still waiting for review. The count is buffered and
+	// flushed every few seconds, so this stays a read.
 	if !thread.Pending {
-		_ = s.store.IncrementThreadViews(r.Context(), id)
+		s.views.Add(id)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -171,6 +190,12 @@ func (s *Server) handleGetPost(w http.ResponseWriter, r *http.Request) {
 	if !moderator && !isThreadAuthor && (thread.Deleted || thread.Pending) {
 		writeError(w, http.StatusNotFound, "not_found", "no such post")
 		return
+	}
+
+	// Same rule as the thread view: the Markdown source is only for readers who
+	// can open the editor.
+	if !canEdit(viewer, authorIDOf(post.Author)) {
+		post.BodyMD = ""
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"post": post})
@@ -434,24 +459,32 @@ func (s *Server) handleCreatePost(w http.ResponseWriter, r *http.Request) {
 
 // notifyMentions resolves @username references to accounts and notifies them.
 func (s *Server) notifyMentions(ctx context.Context, actor *model.User, body string, threadID, postID int64) {
+	// Collect unique handles first, then resolve them in one query: one round trip
+	// per mention is a cost that grows with the length of the reply.
 	seen := map[string]bool{}
-	matches := mentionRE.FindAllStringSubmatch(body, 10)
-	for _, m := range matches {
-		name := m[1]
-		lower := strings.ToLower(name)
+	names := []string{}
+	for _, m := range mentionRE.FindAllStringSubmatch(body, 10) {
+		lower := strings.ToLower(m[1])
 		if seen[lower] {
 			continue
 		}
 		seen[lower] = true
+		names = append(names, m[1])
+	}
+	if len(names) == 0 {
+		return
+	}
 
-		acct, err := s.store.AccountByUsername(ctx, name)
-		if err != nil {
-			continue // unknown handle: silently ignored
-		}
-		if acct.User.Status != model.StatusActive {
+	targets, err := s.store.MentionTargets(ctx, names)
+	if err != nil {
+		s.log.Error("notify: resolve mentions", "err", err, "thread", threadID)
+		return
+	}
+	for _, t := range targets {
+		if t.Status != model.StatusActive {
 			continue
 		}
-		_ = s.store.Notify(ctx, acct.User.ID, actor.ID, "mention", threadID, postID)
+		_ = s.store.Notify(ctx, t.ID, actor.ID, "mention", threadID, postID)
 	}
 }
 

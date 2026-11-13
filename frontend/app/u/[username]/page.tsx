@@ -18,10 +18,14 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 
 export default async function ProfilePage({ params }: Props) {
   const { username } = await params;
-  const data = await getUser(username);
+  // One parallel stage: the profile lookup was gating the other two for no reason.
+  const [data, meta, posts] = await Promise.all([
+    getUser(username),
+    getMeta(),
+    getUserPosts(username),
+  ]);
   if (!data) notFound();
 
-  const [meta, posts] = await Promise.all([getMeta(), getUserPosts(username)]);
   const { user, post_count } = data;
   const isSelf = meta.user?.id === user.id;
 
@@ -80,7 +84,7 @@ export default async function ProfilePage({ params }: Props) {
                     href={`/t/${post.thread_id}#post-${post.id}`}
                     className="list-row-title"
                   >
-                    {firstLine(post.body_md)}
+                    {preview(post.excerpt)}
                   </Link>
                   <div className="list-row-meta">
                     <Timestamp at={post.created_at} />
@@ -96,12 +100,9 @@ export default async function ProfilePage({ params }: Props) {
   );
 }
 
-/** firstLine is a compact preview of a post for the profile listing. */
-function firstLine(markdown: string): string {
-  const line = markdown
-    .split("\n")
-    .map((l) => l.trim())
-    .find((l) => l.length > 0 && !l.startsWith("```"));
-  const text = (line ?? "(empty)").replace(/^#+\s*/, "").replace(/[*_`>]/g, "");
+/** preview shortens the plain-text excerpt the API sends for each post. */
+function preview(excerpt: string): string {
+  const text = excerpt.trim();
+  if (!text) return "(empty)";
   return text.length > 90 ? `${text.slice(0, 90)}…` : text;
 }

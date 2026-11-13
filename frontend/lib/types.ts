@@ -59,7 +59,8 @@ export interface Post {
   id: number;
   thread_id: number;
   author: User | null;
-  body_md: string;
+  /** Markdown source, sent only to readers who may edit this post. */
+  body_md?: string;
   body_html: string;
   score: number;
   my_vote: number;
@@ -99,6 +100,15 @@ export interface MailQueue {
   /** Attempts after which a message is treated as lost. */
   max_attempts: number;
   items: MailItem[];
+}
+
+/** One entry in a member's post listing: a line of plain text, not a post. */
+export interface ProfilePost {
+  id: number;
+  thread_id: number;
+  excerpt: string;
+  score: number;
+  created_at: number;
 }
 
 export interface Notification {
@@ -175,6 +185,8 @@ export interface Meta {
   version: string;
   /** True while the instance has no accounts at all. */
   needs_setup: boolean;
+  /** Unread notifications, so the header badge needs no second request. */
+  unread: number;
   user: Self | null;
 }
 

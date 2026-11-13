@@ -199,6 +199,8 @@ func (s *Server) handleAdminGetSettings(w http.ResponseWriter, r *http.Request) 
 	if s.mustAdmin(w, r) == nil {
 		return
 	}
+	// The admin form is the one place that must not read a cached copy: it shows
+	// what is stored, and the operator is about to edit it.
 	all, err := s.store.Settings(r.Context())
 	if err != nil {
 		writeStoreError(s, w, r, err, "no settings")
@@ -316,6 +318,8 @@ func (s *Server) handleAdminSetSettings(w http.ResponseWriter, r *http.Request) 
 		writeStoreError(s, w, r, err, "could not save settings")
 		return
 	}
+	// Settings are cached for every other reader, so a save has to drop the copy.
+	s.invalidateSettings()
 	_ = s.store.Log(r.Context(), admin.ID, "admin.settings", "settings", 0, "")
 
 	all, err := s.store.Settings(r.Context())

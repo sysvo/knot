@@ -133,6 +133,7 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.SetSettings(r.Context(), settings); err != nil {
 		s.log.Error("save setup settings", "err", err)
 	}
+	s.invalidateSettings()
 
 	_ = s.store.Log(r.Context(), acct.User.ID, "user.setup", "user", acct.User.ID, "")
 

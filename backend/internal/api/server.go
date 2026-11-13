@@ -35,6 +35,10 @@ type Server struct {
 	// mailKick wakes the delivery worker as soon as something is queued, so a
 	// magic link does not wait for the next poll.
 	mailKick chan struct{}
+	// views buffers thread view counts so reading a thread stays a read.
+	views *viewCounter
+	// cfgCache holds the settings table, which every request reads.
+	cfgCache settingsCache
 }
 
 // New builds a Server.
@@ -48,6 +52,7 @@ func New(cfg *config.Config, st *store.Store, logger *slog.Logger) *Server {
 		limiter:  ratelimit.New(),
 		started:  time.Now(),
 		mailKick: make(chan struct{}, 1),
+		views:    newViewCounter(),
 	}
 }
 
@@ -129,6 +134,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/admin/backups", s.handleAdminBackups)
 	mux.HandleFunc("POST /api/v1/admin/backups", s.handleAdminCreateBackup)
 	mux.HandleFunc("GET /api/v1/admin/backups/{name}", s.handleAdminDownloadBackup)
+
+	// Profiles, for whoever has to answer "why is it slow".
+	mux.Handle("/api/v1/admin/pprof/", s.adminOnly(s.pprofHandler()))
 	mux.HandleFunc("POST /api/v1/admin/boards", s.handleAdminCreateBoard)
 	mux.HandleFunc("PATCH /api/v1/admin/boards/{id}", s.handleAdminUpdateBoard)
 	mux.HandleFunc("DELETE /api/v1/admin/boards/{id}", s.handleAdminDeleteBoard)
@@ -206,6 +214,7 @@ func (s *Server) Bootstrap(ctx context.Context) error {
 // background runs periodic housekeeping until ctx is cancelled.
 func (s *Server) background(ctx context.Context) {
 	go s.mailWorker(ctx)
+	go s.viewFlusher(ctx)
 
 	ticker := time.NewTicker(15 * time.Minute)
 	defer ticker.Stop()

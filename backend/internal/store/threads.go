@@ -4,23 +4,27 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/sysvo/knot/internal/model"
 )
 
-func threadSelect() string {
+// threadColumns is the projection every thread read shares.
+func threadColumns() string {
 	return `SELECT t.id, t.board_id, b.slug, b.name, t.title, t.pinned, t.locked,
 	       (t.deleted_at IS NOT NULL), (t.approved_at IS NULL), t.excerpt,
 	       t.post_count, t.view_count, t.created_at, t.last_post_at,
 	       ` + userCols("u") + `,
-	       ` + userCols("lu") + `
-	FROM threads t
+	       ` + userCols("lu")
+}
+
+// threadJoins hydrates a row of threads. It expects the table aliased as t.
+const threadJoins = `
 	JOIN boards b ON b.id = t.board_id
 	LEFT JOIN users u ON u.id = t.author_id
 	LEFT JOIN posts lp ON lp.id = t.last_post_id
 	LEFT JOIN users lu ON lu.id = lp.author_id`
-}
 
 func scanThread(row interface{ Scan(...any) error }) (*model.Thread, error) {
 	var (
@@ -84,19 +88,50 @@ type ThreadQuery struct {
 }
 
 // ListThreads pages through threads.
-func (s *Store) ListThreads(ctx context.Context, q ThreadQuery) ([]model.Thread, int64, error) {
-	where := ` WHERE 1 = 1`
+//
+// where builds the visibility filter and its arguments.
+//
+// Built as a list rather than with a `1 = 1` prefix: a partial index is only used
+// when the planner can prove the query's predicates imply the index's, and an
+// unprovable tautology in front of them is enough for it to give up.
+func (q ThreadQuery) where() (string, []any) {
+	constraints := []string{}
 	args := []any{}
 	if q.BoardID != nil {
-		where += ` AND t.board_id = ?`
+		constraints = append(constraints, `t.board_id = ?`)
 		args = append(args, *q.BoardID)
 	}
 	if !q.IncludeDeleted {
-		where += ` AND t.deleted_at IS NULL`
+		constraints = append(constraints, `t.deleted_at IS NULL`)
 	}
 	if !q.IncludePending {
-		where += ` AND t.approved_at IS NOT NULL`
+		constraints = append(constraints, `t.approved_at IS NOT NULL`)
 	}
+	if len(constraints) == 0 {
+		return "", args
+	}
+	return ` WHERE ` + strings.Join(constraints, ` AND `), args
+}
+
+// listSQL builds the hydrated page query. It is separate from ListThreads so the
+// query-plan test can check the very same statement.
+func (q ThreadQuery) listSQL(limit, offset int) (string, []any) {
+	where, args := q.where()
+	order := q.Sort.orderBy()
+	sqlText := threadColumns() + `
+	FROM (SELECT t.id FROM threads t` + where + order + ` LIMIT ? OFFSET ?) page
+	JOIN threads t ON t.id = page.id` + threadJoins + order
+	return sqlText, append(args, limit, offset)
+}
+
+// ListThreads pages through threads.
+//
+// The page of ids is selected first, in its own subquery, so the planner can walk
+// the partial index in listing order and stop after LIMIT rows. Selecting the
+// hydrated rows directly made SQLite scan the threads table and sort the result in
+// a temp B-tree, because the ORDER BY cannot be satisfied through the joins.
+func (s *Store) ListThreads(ctx context.Context, q ThreadQuery) ([]model.Thread, int64, error) {
+	where, args := q.where()
 
 	var total int64
 	if err := s.db.QueryRowContext(ctx,
@@ -104,9 +139,8 @@ func (s *Store) ListThreads(ctx context.Context, q ThreadQuery) ([]model.Thread,
 		return nil, 0, err
 	}
 
-	// threadSelect already joins boards and users, so the same WHERE applies.
-	sqlText := threadSelect() + where + q.Sort.orderBy() + ` LIMIT ? OFFSET ?`
-	rows, err := s.db.QueryContext(ctx, sqlText, append(args, q.Limit, q.Offset)...)
+	sqlText, listArgs := q.listSQL(q.Limit, q.Offset)
+	rows, err := s.db.QueryContext(ctx, sqlText, listArgs...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -125,7 +159,8 @@ func (s *Store) ListThreads(ctx context.Context, q ThreadQuery) ([]model.Thread,
 
 // ThreadByID loads a single thread with its board and participants.
 func (s *Store) ThreadByID(ctx context.Context, id int64) (*model.Thread, error) {
-	return scanThread(s.db.QueryRowContext(ctx, threadSelect()+` WHERE t.id = ?`, id))
+	return scanThread(s.db.QueryRowContext(ctx,
+		threadColumns()+` FROM threads t`+threadJoins+` WHERE t.id = ?`, id))
 }
 
 // CreateThread inserts a thread and its first post in one transaction.
@@ -217,10 +252,32 @@ func (s *Store) SoftDeleteThread(ctx context.Context, id int64, by int64) error 
 	return err
 }
 
-// IncrementThreadViews counts a read. It is fire-and-forget.
-func (s *Store) IncrementThreadViews(ctx context.Context, id int64) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE threads SET view_count = view_count + 1 WHERE id = ?`, id)
-	return err
+// AddThreadViews adds buffered view counts in one transaction.
+//
+// Views are counted in memory and written in batches: a per-view UPDATE made every
+// page read a write transaction as well.
+func (s *Store) AddThreadViews(ctx context.Context, counts map[int64]int64) error {
+	if len(counts) == 0 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.PrepareContext(ctx, `UPDATE threads SET view_count = view_count + ? WHERE id = ?`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for id, n := range counts {
+		if _, err := stmt.ExecContext(ctx, n, id); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // RecentThreads is the home page list: newest activity across all boards.

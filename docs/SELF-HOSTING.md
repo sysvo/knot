@@ -236,17 +236,33 @@ account that cannot sign in, `knot role` and `knot passwd` above are the way bac
 
 ## Performance and limits
 
-A single SQLite connection serves every request. That is not a bottleneck at
-forum scale — statements run in tens of microseconds — but it does mean one slow
-query blocks others. The queries that could get slow are the thread listings, and
-they are covered by indexes on `(board_id, pinned, last_post_at)` and
-`(last_post_at)`.
+Reads run concurrently: the database pool holds a few connections and WAL lets them
+work while a write commits. Writes are serialised inside SQLite, which is what a
+single-file database does, and a burst of them queues rather than fails.
 
-If you ever outgrow one box, the thing to replace is `internal/store`; nothing
+The listing queries are covered by partial indexes on exactly the visibility filter
+they apply (`deleted_at IS NULL AND approved_at IS NOT NULL`), and the board
+counters are summed from `threads.post_count` instead of counting posts. On a
+seeded 10,000-thread / 40,000-post database the two hot queries measure ~0.2 ms
+(thread list, was ~3.5 ms) and ~1.8 ms (boards, was ~11 ms); the numbers are
+reproducible with `go test ./internal/store -bench . -run XXX`.
+
+A database that should serve tens of thousands of threads comfortably on a small
+VPS. If you ever outgrow one box, the thing to replace is `internal/store`; nothing
 else knows that the database is SQLite.
 
 Uploads are capped by `KNOT_MAX_UPLOAD_MB` and restricted to PNG, JPEG, GIF and
 WebP, identified by their content rather than their filename.
+
+Profiles: `/api/v1/admin/pprof/` serves the standard Go CPU and heap profiles to
+an administrator, so a slow instance can be measured instead of guessed at.
+
+```bash
+docker compose exec api wget -qO- 'http://127.0.0.1:8080/api/v1/admin/pprof/profile?seconds=30' > cpu.pprof
+```
+
+That needs an admin session cookie, so in practice collect it through the browser's
+session or a `curl -b` with one.
 
 ## A note on proxy headers
 
@@ -292,3 +308,10 @@ INSERT INTO search_index(search_index) VALUES('rebuild');
 **Everything is 500 and the log says `database is locked`.** Another process is
 holding the database — usually a second container or a local `go run` pointed at
 the same file. Run one writer.
+
+**Pages render but every button fails, and the log says `ECONNREFUSED`.**
+`KNOT_API_URL` is baked into the Next build (it is the `/api` rewrite target) and
+read again at run time. Building the frontend image without the build arg and then
+running it with a different `KNOT_API_URL` leaves the browser calling a host that
+does not exist. The compose file passes it as both a build arg and an environment
+variable; if you build the image yourself, pass `--build-arg KNOT_API_URL=…`.

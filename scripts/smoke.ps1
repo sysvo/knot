@@ -188,6 +188,14 @@ Check "script in markdown is stripped" {
     $page.posts[0].body_html -notlike '*<script>*'
 }
 
+Check "the Markdown source is only sent to readers who can edit" {
+    # Everyone else gets the rendered HTML; the source doubled every thread page for
+    # no purpose. The author still gets it, because the edit box needs it.
+    $anon = Call GET "/api/v1/threads/$script:threadId"
+    $mine = Call GET "/api/v1/threads/$script:threadId" $null $admin
+    ($null -eq @($anon.posts)[0].body_md) -and (@($mine.posts)[0].body_md.Length -gt 0)
+}
+
 Check "reply is appended" {
     $p = Call POST "/api/v1/threads/$script:threadId/posts" @{ body = "A reply mentioning nobody" } $admin
     $p.post.id -gt 0
@@ -235,6 +243,19 @@ Check "reply notifies the thread author" {
     # @() is required: a filtered result of exactly one object has no .Count in
     # Windows PowerShell 5.1, so $null -ge 1 would silently read as false.
     @($n.notifications | Where-Object { $_.kind -eq 'reply' }).Count -ge 1
+}
+
+Check "the unread badge arrives with the site metadata" {
+    # The header badge used to be a second request on every signed-in page.
+    $m = Call GET "/api/v1/meta" $null $admin
+    $m.unread -ge 1
+}
+
+Check "the profile listing sends excerpts, not post bodies" {
+    $p = Call GET "/api/v1/users/$adminName/posts" $null $admin
+    $first = @($p.posts)[0]
+    if (-not $first) { throw "no posts listed for $adminName" }
+    ($first.excerpt.Length -gt 0) -and ($null -eq $first.body_md) -and ($null -eq $first.body_html)
 }
 
 Check "mention notifies the mentioned user" {

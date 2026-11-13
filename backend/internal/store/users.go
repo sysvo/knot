@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/sysvo/knot/internal/model"
@@ -54,6 +55,47 @@ func (s *Store) scanAccount(row interface{ Scan(...any) error }) (*Account, erro
 		return nil, err
 	}
 	return &a, nil
+}
+
+// MentionTarget is the slice of an account a notification needs.
+type MentionTarget struct {
+	ID       int64
+	Username string
+	Status   string
+}
+
+// MentionTargets resolves every handle in one query.
+//
+// Mentions used to be looked up one at a time, so a reply naming five people cost
+// five round trips — on the same database handle as everything else.
+func (s *Store) MentionTargets(ctx context.Context, names []string) ([]MentionTarget, error) {
+	if len(names) == 0 {
+		return nil, nil
+	}
+	placeholders := make([]string, len(names))
+	args := make([]any, len(names))
+	for i, name := range names {
+		placeholders[i] = "?"
+		args[i] = name
+	}
+
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, username, status FROM users WHERE lower(username) IN (`+
+			strings.Join(placeholders, ",")+`)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []MentionTarget{}
+	for rows.Next() {
+		var m MentionTarget
+		if err := rows.Scan(&m.ID, &m.Username, &m.Status); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
 }
 
 // AccountByID loads an account by primary key.

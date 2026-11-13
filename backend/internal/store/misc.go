@@ -29,11 +29,18 @@ func (s *Store) Notify(ctx context.Context, userID, actorID int64, kind string, 
 	return err
 }
 
+// UnreadNotificationCount is the number behind the header badge.
+func (s *Store) UnreadNotificationCount(ctx context.Context, userID int64) (int64, error) {
+	var n int64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT count(*) FROM notifications WHERE user_id = ? AND read_at IS NULL`, userID).Scan(&n)
+	return n, err
+}
+
 // ListNotifications returns the newest notifications for a user.
 func (s *Store) ListNotifications(ctx context.Context, userID int64, limit int) ([]model.Notification, int64, error) {
-	var unread int64
-	if err := s.db.QueryRowContext(ctx,
-		`SELECT count(*) FROM notifications WHERE user_id = ? AND read_at IS NULL`, userID).Scan(&unread); err != nil {
+	unread, err := s.UnreadNotificationCount(ctx, userID)
+	if err != nil {
 		return nil, 0, err
 	}
 
@@ -294,27 +301,27 @@ type AdminStats struct {
 }
 
 // AdminStats gathers the dashboard counters in one round trip.
+//
+// Six separate count(*) statements meant six round trips through the database
+// handle, and the post count in particular could not use an index because the
+// visibility filter had none; the partial indexes in 0005_perf.sql cover it.
 func (s *Store) AdminStats(ctx context.Context) (*AdminStats, error) {
 	var st AdminStats
-	counts := []struct {
-		query string
-		dst   *int64
-	}{
-		{`SELECT count(*) FROM users`, &st.Users},
-		{`SELECT count(*) FROM threads WHERE deleted_at IS NULL AND approved_at IS NOT NULL`, &st.Threads},
-		{`SELECT count(*) FROM posts WHERE deleted_at IS NULL AND approved_at IS NOT NULL`, &st.Posts},
-		{`SELECT count(*) FROM reports WHERE status = 'open'`, &st.OpenReports},
-		{`SELECT (SELECT count(*) FROM threads
-		      WHERE approved_at IS NULL AND deleted_at IS NULL)
-		      + (SELECT count(*) FROM posts p JOIN threads t ON t.id = p.thread_id
-		         WHERE p.approved_at IS NULL AND p.deleted_at IS NULL
-		           AND t.approved_at IS NOT NULL)`, &st.PendingItems},
-		{`SELECT count(*) FROM users WHERE status = 'banned'`, &st.BannedUsers},
-	}
-	for _, c := range counts {
-		if err := s.db.QueryRowContext(ctx, c.query).Scan(c.dst); err != nil {
-			return nil, err
-		}
+	err := s.db.QueryRowContext(ctx, `
+		SELECT
+		  (SELECT count(*) FROM users),
+		  (SELECT count(*) FROM threads WHERE deleted_at IS NULL AND approved_at IS NOT NULL),
+		  (SELECT count(*) FROM posts WHERE deleted_at IS NULL AND approved_at IS NOT NULL),
+		  (SELECT count(*) FROM reports WHERE status = 'open'),
+		  (SELECT count(*) FROM threads WHERE approved_at IS NULL AND deleted_at IS NULL)
+		    + (SELECT count(*) FROM posts p
+		        JOIN threads t ON t.id = p.thread_id
+		        WHERE p.approved_at IS NULL AND p.deleted_at IS NULL
+		          AND t.approved_at IS NOT NULL),
+		  (SELECT count(*) FROM users WHERE status = 'banned')`).
+		Scan(&st.Users, &st.Threads, &st.Posts, &st.OpenReports, &st.PendingItems, &st.BannedUsers)
+	if err != nil {
+		return nil, err
 	}
 	st.PublishedAt = time.Now().Unix()
 	return &st, nil
@@ -388,19 +395,9 @@ func (s *Store) SitemapEntries(ctx context.Context, limit int) ([]SitemapThread,
 	return threads, boards, boardRows.Err()
 }
 
-// Search runs a full-text query. boardSlug restricts results to one board.
-//
-// The snippet marks the matched terms with control characters rather than <mark>
-// tags. The indexed text is whatever a member typed, and FTS5 inserts the
-// delimiters into it verbatim without escaping anything, so a snippet containing
-// markup is a stored-XSS vector the moment a caller treats it as HTML. Markers are
-// turned into tags by the API after the text has been escaped.
-func (s *Store) Search(ctx context.Context, query, boardSlug string, limit int) ([]model.SearchHit, error) {
-	match := ftsQuery(query)
-	if match == "" {
-		return []model.SearchHit{}, nil
-	}
-
+// searchSQL builds the search query for one ordering. It exists as its own function
+// so the benchmark can compare the two orderings on the very same statement.
+func searchSQL(match, boardSlug, order string, limit int) (string, []any) {
 	sqlText := `
 		SELECT search_index.thread_id, search_index.post_id, search_index.title, b.slug, b.name,
 		       snippet(search_index, 1, char(2), char(3), '…', 24),
@@ -419,8 +416,29 @@ func (s *Store) Search(ctx context.Context, query, boardSlug string, limit int) 
 		sqlText += ` AND b.slug = ? COLLATE NOCASE`
 		args = append(args, boardSlug)
 	}
-	sqlText += ` ORDER BY bm25(search_index) LIMIT ?`
+	sqlText += ` ORDER BY ` + order + ` LIMIT ?`
 	args = append(args, limit)
+	return sqlText, args
+}
+
+// Search runs a full-text query. boardSlug restricts results to one board.
+//
+// The snippet marks the matched terms with control characters rather than <mark>
+// tags. The indexed text is whatever a member typed, and FTS5 inserts the
+// delimiters into it verbatim without escaping anything, so a snippet containing
+// markup is a stored-XSS vector the moment a caller treats it as HTML. Markers are
+// turned into tags by the API after the text has been escaped.
+func (s *Store) Search(ctx context.Context, query, boardSlug string, limit int) ([]model.SearchHit, error) {
+	match := ftsQuery(query)
+	if match == "" {
+		return []model.SearchHit{}, nil
+	}
+
+	// ORDER BY rank rather than bm25(search_index): the ranking function is one of
+	// FTS5's hidden columns, and calling it explicitly forces a separate pass that
+	// scores and sorts every match. The bare column uses the ranking FTS5 already
+	// produced for the MATCH.
+	sqlText, args := searchSQL(match, boardSlug, "rank", limit)
 
 	rows, err := s.db.QueryContext(ctx, sqlText, args...)
 	if err != nil {

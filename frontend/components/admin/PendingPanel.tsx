@@ -107,7 +107,7 @@ export default function PendingPanel({
                     <Link href={`/t/${item.post.thread_id}`}>{item.thread_title || "a thread"}</Link>
                   </span>
                 </div>
-                <p className="list-row-excerpt">{item.post.body_md.slice(0, 400)}</p>
+                <p className="list-row-excerpt">{(item.post.body_md ?? "").slice(0, 400)}</p>
 
                 <div className="row" style={{ marginTop: "0.5rem" }}>
                   <button

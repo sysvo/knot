@@ -53,6 +53,10 @@ services:
   web:
     build:
       context: ./frontend
+      # The /api rewrite destination is baked in at build time, so the build arg
+      # and the runtime value below have to agree; both are the compose hostname.
+      args:
+        KNOT_API_URL: http://api:8080
     restart: unless-stopped
     environment:
       KNOT_API_URL: http://api:8080

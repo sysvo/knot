@@ -30,7 +30,12 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	limit := s.cfg.MaxUploadSize
 	r.Body = http.MaxBytesReader(w, r.Body, limit+1024)
 
-	if err := r.ParseMultipartForm(limit); err != nil {
+	// Memory budget for the parsed form, not the size limit: ParseMultipartForm
+	// keeps this much in RAM and spills the rest to a temporary file. Handing it
+	// the full limit meant a handful of concurrent uploads could each pin
+	// megabytes of heap for no benefit — the file is copied to disk anyway.
+	const uploadMemory = 1 << 20
+	if err := r.ParseMultipartForm(uploadMemory); err != nil {
 		writeError(w, http.StatusRequestEntityTooLarge, "too_large", "that file is too large")
 		return
 	}

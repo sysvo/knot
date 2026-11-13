@@ -23,7 +23,7 @@ const (
 
 // getSetting reads one setting with a fallback.
 func (s *Server) getSetting(ctx context.Context, key, def string) string {
-	all, err := s.store.Settings(ctx)
+	all, err := s.settings(ctx)
 	if err != nil {
 		s.log.Error("read settings", "err", err)
 		return def
@@ -61,7 +61,7 @@ func (s *Server) equaliseTiming(password string) {
 // handleMeta returns the public site configuration plus the current user, so
 // the frontend can render a complete page header in one request.
 func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
-	all, err := s.store.Settings(r.Context())
+	all, err := s.settings(r.Context())
 	if err != nil {
 		s.log.Error("read settings", "err", err)
 		all = map[string]string{}
@@ -73,9 +73,15 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var self *model.Self
+	var unread int64
 	if u := currentUser(r); u != nil {
 		if acct, err := s.store.AccountByID(r.Context(), u.ID); err == nil {
 			self = acct.Self()
+			// The header badge used to cost a second round trip on every signed-in
+			// page; it is one small count, and it belongs next to the user anyway.
+			if n, err := s.store.UnreadNotificationCount(r.Context(), u.ID); err == nil {
+				unread = n
+			}
 		}
 	}
 
@@ -94,6 +100,7 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 		"max_upload_bytes":           s.cfg.MaxUploadSize,
 		"version":                    Version,
 		"needs_setup":                needsSetup,
+		"unread":                     unread,
 		"user":                       self,
 	})
 }

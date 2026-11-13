@@ -25,9 +25,6 @@ type Store struct {
 // New returns a Store backed by db.
 func New(db *sql.DB) *Store { return &Store{db: db} }
 
-// DB exposes the underlying handle for migrations and tests.
-func (s *Store) DB() *sql.DB { return s.db }
-
 // isUniqueViolation reports whether err is a UNIQUE constraint failure. The
 // driver returns plain errors, so the constraint name is read from the text.
 func isUniqueViolation(err error, column string) bool {

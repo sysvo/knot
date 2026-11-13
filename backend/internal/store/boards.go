@@ -9,17 +9,45 @@ import (
 	"github.com/sysvo/knot/internal/model"
 )
 
+// boardColumns is the shared projection.
+const boardColumns = `b.id, b.slug, b.name, b.description, b.position, b.created_at`
+
+// boardSelect reads one board and its counters.
+//
+// The post count is summed from threads.post_count rather than counted through a
+// join of every post in the board. That column is maintained by recountThread in
+// the same transaction as every post mutation, so the sum is the same number the
+// join produced — for the visible threads, which is what the board count means
+// everywhere else — without reading the posts table at all.
 const boardSelect = `
-	SELECT b.id, b.slug, b.name, b.description, b.position, b.created_at,
+	SELECT ` + boardColumns + `,
 	       (SELECT count(*) FROM threads t
 	         WHERE t.board_id = b.id AND t.deleted_at IS NULL AND t.approved_at IS NOT NULL),
-	       (SELECT count(*) FROM posts p JOIN threads t2 ON t2.id = p.thread_id
-	         WHERE t2.board_id = b.id AND p.deleted_at IS NULL
-	           AND p.approved_at IS NOT NULL AND t2.approved_at IS NOT NULL),
+	       COALESCE((SELECT sum(t2.post_count) FROM threads t2
+	         WHERE t2.board_id = b.id AND t2.deleted_at IS NULL AND t2.approved_at IS NOT NULL), 0),
 	       COALESCE((SELECT max(t3.last_post_at) FROM threads t3
 	         WHERE t3.board_id = b.id AND t3.deleted_at IS NULL
 	           AND t3.approved_at IS NOT NULL), 0)
 	FROM boards b`
+
+// listBoardsSelect reads every board.
+//
+// The counters are one grouped pass over the visible threads, joined back to the
+// boards, rather than three correlated subqueries per board: with a dozen boards
+// the correlated form walked the same threads twelve times.
+const listBoardsSelect = `
+	SELECT ` + boardColumns + `,
+	       COALESCE(agg.threads, 0), COALESCE(agg.posts, 0), COALESCE(agg.last_post_at, 0)
+	FROM boards b
+	LEFT JOIN (
+	    SELECT board_id,
+	           count(*)                AS threads,
+	           sum(post_count)         AS posts,
+	           max(last_post_at)       AS last_post_at
+	    FROM threads
+	    WHERE deleted_at IS NULL AND approved_at IS NOT NULL
+	    GROUP BY board_id
+	) agg ON agg.board_id = b.id`
 
 func scanBoard(row interface{ Scan(...any) error }) (*model.Board, error) {
 	var b model.Board
@@ -36,7 +64,7 @@ func scanBoard(row interface{ Scan(...any) error }) (*model.Board, error) {
 
 // ListBoards returns every board with its thread and post counts.
 func (s *Store) ListBoards(ctx context.Context) ([]model.Board, error) {
-	rows, err := s.db.QueryContext(ctx, boardSelect+` ORDER BY b.position, b.name`)
+	rows, err := s.db.QueryContext(ctx, listBoardsSelect+` ORDER BY b.position, b.name`)
 	if err != nil {
 		return nil, err
 	}

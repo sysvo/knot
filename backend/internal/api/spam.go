@@ -16,7 +16,7 @@ import (
 // falls back to the defaults rather than disabling the protection, because the
 // fallback is stricter than "no rules".
 func (s *Server) spamRules(ctx context.Context) policy.Rules {
-	all, err := s.store.Settings(ctx)
+	all, err := s.settings(ctx)
 	if err != nil {
 		s.log.Error("read spam settings", "err", err)
 		return policy.Defaults()

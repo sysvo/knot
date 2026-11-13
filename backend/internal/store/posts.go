@@ -265,23 +265,37 @@ func (s *Store) PostsInLastDay(ctx context.Context, userID int64, since int64) (
 	return n, err
 }
 
+// ProfilePost is one entry in a member's post listing. It carries a plain-text
+// excerpt rather than the post itself: the profile page shows one line per post,
+// and sending body_md and body_html for twenty posts meant downloading megabytes
+// of Markdown and HTML that are thrown away on arrival.
+type ProfilePost struct {
+	ID        int64  `json:"id"`
+	ThreadID  int64  `json:"thread_id"`
+	Excerpt   string `json:"excerpt"`
+	Score     int64  `json:"score"`
+	CreatedAt int64  `json:"created_at"`
+}
+
 // RecentPostsByUser feeds the profile page. Held posts stay private.
-func (s *Store) RecentPostsByUser(ctx context.Context, userID int64, limit int) ([]model.Post, error) {
-	rows, err := s.db.QueryContext(ctx,
-		postSelect()+` WHERE p.author_id = ? AND p.deleted_at IS NULL AND p.approved_at IS NOT NULL
-		 ORDER BY p.created_at DESC LIMIT ?`, userID, userID, limit)
+func (s *Store) RecentPostsByUser(ctx context.Context, userID int64, limit int) ([]ProfilePost, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT p.id, p.thread_id, substr(p.search_text, 1, 160), p.score, p.created_at
+		FROM posts p
+		WHERE p.author_id = ? AND p.deleted_at IS NULL AND p.approved_at IS NOT NULL
+		ORDER BY p.created_at DESC LIMIT ?`, userID, limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	out := []model.Post{}
+	out := []ProfilePost{}
 	for rows.Next() {
-		p, err := scanPost(rows)
-		if err != nil {
+		var p ProfilePost
+		if err := rows.Scan(&p.ID, &p.ThreadID, &p.Excerpt, &p.Score, &p.CreatedAt); err != nil {
 			return nil, err
 		}
-		out = append(out, *p)
+		out = append(out, p)
 	}
 	return out, rows.Err()
 }

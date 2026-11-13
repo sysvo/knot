@@ -16,6 +16,7 @@ import type {
   PageInfo,
   PendingPost,
   Post,
+  ProfilePost,
   Report,
   SearchHit,
   Self,
@@ -105,6 +106,7 @@ export async function getMeta(): Promise<Meta> {
     max_upload_bytes: 0,
     version: "dev",
     needs_setup: false,
+    unread: 0,
     user: null,
   });
 }
@@ -193,9 +195,9 @@ export async function getUser(
   }
 }
 
-export async function getUserPosts(username: string): Promise<Post[]> {
+export async function getUserPosts(username: string): Promise<ProfilePost[]> {
   try {
-    const data = await request<{ posts: Post[] }>(
+    const data = await request<{ posts: ProfilePost[] }>(
       `/api/v1/users/${encodeURIComponent(username)}/posts`,
     );
     return data.posts ?? [];

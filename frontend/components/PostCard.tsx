@@ -33,7 +33,7 @@ export default function PostCard({
 
   const [score, setScore] = useState(post.score);
   const [myVote, setMyVote] = useState(post.my_vote);
-  const [body, setBody] = useState(post.body_md);
+  const [body, setBody] = useState(post.body_md ?? "");
   const [editing, setEditing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -162,7 +162,7 @@ export default function PostCard({
                 className="btn btn-ghost btn-sm"
                 onClick={() => {
                   setEditing(false);
-                  setBody(post.body_md);
+                  setBody(post.body_md ?? "");
                 }}
               >
                 Cancel

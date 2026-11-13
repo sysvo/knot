@@ -59,12 +59,20 @@ aggregate over every post.
 
 ### SQLite specifics
 
-- **One connection.** The pool is capped at one connection. SQLite serialises
-  writers anyway; a single connection also removes any chance of `SQLITE_BUSY`
-  or of a deferred transaction failing to upgrade to a write lock. Statements
-  take tens of microseconds, so this comfortably serves a forum. To scale past a
-  single box, the store is the only thing that has to change.
-- **WAL, `synchronous=NORMAL`, `foreign_keys=ON`** are set in the DSN.
+- **A small pool, with writers serialised inside SQLite.** WAL lets readers run
+  while a writer commits, so the pool holds `max(4, NumCPU)` connections and a
+  request no longer queues behind another request's queries. What has to stay
+  serialised is the writers, and `_txlock=immediate` makes that safe: a deferred
+  transaction that reads before it writes has to upgrade its lock, and SQLite
+  refuses that upgrade immediately when another writer got there first. Taking the
+  write lock at `BEGIN` turns it into a wait bounded by `busy_timeout` instead of
+  a `database is locked` error. Every transaction in the store is a write, so no
+  read is ever promoted into a write lock.
+- **One connection is reserved for backups.** `VACUUM INTO` holds a read
+  transaction for as long as the copy takes; it runs on its own handle so it
+  cannot occupy a pooled connection while it does.
+- **WAL, `synchronous=NORMAL`, `foreign_keys=ON`** are set in the DSN, which the
+  driver applies to every connection it opens.
 - **Migrations are embedded** in the binary and applied on start, each in its own
   transaction, tracked in `schema_migrations`.
 
@@ -87,7 +95,46 @@ so snippets read as prose rather than showing `###` and asterisks.
 FTS5 with the `porter unicode61` tokenizer, maintained by triggers on `posts` and
 `threads`. Free-text input is turned into a quoted, prefix-matched `AND` query in
 which every non-alphanumeric character is a separator — so `self-hosted` searches
-for both words and no input can be read as an FTS operator.
+for both words and no input can be read as an FTS operator. Results are ordered by
+`rank`, the column FTS5 fills in for the `MATCH`, rather than by an explicit
+`bm25()` call: the function forces a second pass that scores and sorts every match,
+and measured ~1.8× slower on a 40,000-post index for the identical order.
+
+## Performance
+
+The design assumes a single box serving a forum, not a busy social network. Within
+that, three rules keep the hot pages cheap:
+
+- **The page of ids is chosen before anything is joined.** `ListThreads` selects
+  ids through a partial index in listing order, then hydrates that page, so the
+  planner can stop after `LIMIT` rows. Hydrating first made SQLite scan `threads`
+  and sort the result in a temp B-tree. The index predicates have to match the
+  query word for word — even a `1 = 1` in front of them stops SQLite proving the
+  implication, which is why the `WHERE` is assembled from a list.
+- **Counts that can be stored are stored.** A board's post count is
+  `sum(threads.post_count)`, grouped once for the whole page rather than a
+  correlated count per board, and `post_count` itself is recomputed from the posts
+  in the same transaction as every mutation (`recountThread`). Nothing counts posts
+  on a read path.
+- **Reading does not write.** The thread page used to `UPDATE threads SET
+  view_count = view_count + 1` on the way out, which made every view a write
+  transaction; the count is buffered in memory and flushed in one batch every ten
+  seconds. Settings are read once into a per-process snapshot and invalidated by
+  the write paths.
+
+`go test ./internal/store -bench . -run XXX` compares each replaced query with the
+one it replaced on a seeded 10,000-thread / 40,000-post database, and
+`internal/store/plan_test.go` asserts the query plans — no table scan, no sort of
+the whole table — so a regression is a failing test rather than a slow page.
+
+Two things were deliberately left alone. **Post bodies still cross the wire twice**
+once rendered and once as `body_html` in the client component's props; `body_md` is
+now only sent to readers who may edit, which removes the third copy, and splitting
+`PostCard` into a server body plus a client actions island is the next step if a
+thread page needs to shrink further. **HTML is not cached**: every route is dynamic
+because the layout reads the session, and making the content routes incremental
+means moving the header into a client island first — a change to how the app is
+assembled, not a query tweak.
 
 ## Authentication
 
