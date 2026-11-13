@@ -20,6 +20,10 @@ services:
       KNOT_DB: /data/knot.db
       KNOT_UPLOAD_DIR: /data/uploads
       KNOT_PUBLIC_URL: ${KNOT_PUBLIC_URL:-http://localhost}
+      # Caddy is the only route to this container, so its X-Forwarded-For is worth
+      # believing. Drop this if you ever publish the API port directly, or callers
+      # can pick their own rate-limit bucket.
+      KNOT_TRUST_PROXY: ${KNOT_TRUST_PROXY:-true}
       # Backups default to /data/backups, on the same volume as the database.
       KNOT_BACKUP_DIR: ${KNOT_BACKUP_DIR:-}
       KNOT_BACKUP_KEEP: ${KNOT_BACKUP_KEEP:-7}

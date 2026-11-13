@@ -263,6 +263,21 @@ Check "search tolerates operator characters" {
     $s.query.Length -gt 0
 }
 
+# A snippet quotes post text, and the index stores that text as plain text. Typed
+# inside a code block the payload below reaches the index with its angle brackets
+# intact, so the snippet is the one place post text becomes HTML in the browser.
+Check "a search snippet is escaped, not rendered" {
+    $needle = "sneaky$suffix"
+    $body = '`<img src=x onerror=alert(1)> ' + $needle + '`'
+    Call POST "/api/v1/threads/$script:threadId/posts" @{ body = $body } $admin | Out-Null
+
+    $s = Call GET "/api/v1/search?q=$needle" $null $admin
+    $hit = @($s.results | Where-Object { $_.snippet -like "*$needle*" })[0]
+    if (-not $hit) { throw "the payload post was not indexed" }
+    if ($hit.snippet -like '*<img*') { throw "snippet contains a live tag: $($hit.snippet)" }
+    $hit.snippet -like '*&lt;img*'
+}
+
 Check "reporting a post works" {
     $r = Call POST "/api/v1/posts/$script:firstPostId/report" @{ reason = 'spam'; details = 'smoke test' } $mod
     $r.id -gt 0
@@ -332,6 +347,28 @@ Check "logout clears the session" {
 Check "profile update persists" {
     $r = Call PATCH "/api/v1/me" @{ display_name = "Smoke Tester"; bio = "testing"; avatar_url = "" } $admin
     $r.display_name -eq 'Smoke Tester'
+}
+
+# A remote avatar makes every reader's browser call a third party, which reveals
+# who is reading what, so it is opt-in.
+Check "a remote avatar is refused" {
+    try {
+        Call PATCH "/api/v1/me" @{ avatar_url = "https://example.com/avatar.png" } $admin | Out-Null
+        $false
+    }
+    catch {
+        $_.Exception.Response.StatusCode.value__ -eq 400
+    }
+}
+
+Check "an uploaded avatar is accepted" {
+    $r = Call PATCH "/api/v1/me" @{ avatar_url = "/uploads/smoke.png" } $admin
+    $r.avatar_url -eq "/uploads/smoke.png"
+}
+
+Check "an avatar can be cleared again" {
+    $r = Call PATCH "/api/v1/me" @{ avatar_url = "" } $admin
+    $r.avatar_url -eq ""
 }
 
 # ---- spam protection ----
@@ -468,6 +505,35 @@ Check "nobody else can see a held thread" {
     }
 }
 
+# The thread view hides held threads; the single-post view has to agree, or the
+# queue can be read by walking ids.
+Check "the opening post of a held thread is not readable by id" {
+    $t = Call GET "/api/v1/threads/$script:heldId" $null $script:heldAuthor
+    $script:heldPostId = @($t.posts)[0].id
+    try {
+        Call GET "/api/v1/posts/$script:heldPostId" $null $member | Out-Null
+        $false
+    }
+    catch {
+        $_.Exception.Response.StatusCode.value__ -eq 404
+    }
+}
+
+Check "the author can still read their own held post" {
+    $p = Call GET "/api/v1/posts/$script:heldPostId" $null $script:heldAuthor
+    $p.post.id -eq $script:heldPostId
+}
+
+Check "a stranger cannot reply into a held thread" {
+    try {
+        Call POST "/api/v1/threads/$script:heldId/posts" @{ body = "sneaking into the queue" } $member | Out-Null
+        $false
+    }
+    catch {
+        $_.Exception.Response.StatusCode.value__ -eq 404
+    }
+}
+
 Check "a held thread stays out of the board list" {
     $list = Call GET "/api/v1/boards/general/threads?per_page=100" $null $admin
     @($list.threads | Where-Object { $_.id -eq $script:heldId }).Count -eq 0
@@ -563,6 +629,7 @@ Check "a nonsense spam threshold is refused" {
 $script:resetEmail = "reset$suffix@example.com"
 $script:resetUser = New-Session
 $script:resetToken = ""
+$script:mailId = 0
 
 Check "password reset is unavailable without a mail server" {
     try {
@@ -607,16 +674,48 @@ Check "a reset link is queued rather than sent during the request" {
         (@($q.items | Where-Object { $_.to -eq $script:resetEmail }).Count -ge 1)
 }
 
-Check "a failed delivery is recorded with its error" {
-    # The worker tries 127.0.0.1:1 as soon as something is queued.
+Check "the queue listing redacts sign-in links" {
     $q = Call GET "/api/v1/admin/mail" $null $admin
     $item = @($q.items | Where-Object { $_.to -eq $script:resetEmail })[0]
     if (-not $item) { throw "nothing queued for $($script:resetEmail)" }
-    $script:resetToken = if ($item.body -match 'token=([A-Za-z0-9_\-]+)') { $matches[1] } else { "" }
+    $script:mailId = $item.id
 
-    # Either it has already been tried, or it is still waiting for its first
-    # attempt; both are fine, but a token must be in the message.
-    $script:resetToken.Length -ge 20 -and ($item.attempts -ge 0)
+    # The body is still there to diagnose a delivery failure, but the token that
+    # makes the link work must not be: a screenshot of the outbox is not a
+    # credential. Contains() rather than -like: wildcards read [redacted] as a
+    # character class and would quietly match anything.
+    $item.body.Contains("token=[redacted]") -and ($item.body -notmatch 'token=[A-Za-z0-9_\-]{20,}')
+}
+
+Check "a plain member cannot read a queued message" {
+    try {
+        Call GET "/api/v1/admin/mail/$($script:mailId)" $null $member | Out-Null
+        $false
+    }
+    catch {
+        $_.Exception.Response.StatusCode.value__ -eq 403
+    }
+}
+
+Check "an admin can read a queued message deliberately" {
+    $full = Call GET "/api/v1/admin/mail/$script:mailId" $null $admin
+    $script:resetToken = if ($full.message.body -match 'token=([A-Za-z0-9_\-]+)') { $matches[1] } else { "" }
+    $script:resetToken.Length -ge 20
+}
+
+Check "a failed delivery is recorded with its error" {
+    # The worker dials 127.0.0.1:1 as soon as something is queued, but the attempt
+    # happens on another goroutine, so give it a moment rather than guessing.
+    $item = $null
+    for ($i = 0; $i -lt 30; $i++) {
+        $q = Call GET "/api/v1/admin/mail" $null $admin
+        $item = @($q.items | Where-Object { $_.to -eq $script:resetEmail })[0]
+        if ($item -and $item.attempts -ge 1) { break }
+        Start-Sleep -Milliseconds 100
+    }
+    if (-not $item) { throw "nothing queued for $($script:resetEmail)" }
+
+    ($item.attempts -ge 1) -and ($item.last_error -like "*127.0.0.1*")
 }
 
 Check "the reset token sets a new password" {

@@ -2,18 +2,17 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 import { getMeta, getNotifications } from "@/lib/server";
-import { siteURL } from "@/lib/site";
+import { SITE_URL } from "@/lib/site";
 import SetupBanner from "@/components/SetupBanner";
 import SiteHeader from "@/components/SiteHeader";
 import SiteFooter from "@/components/SiteFooter";
 
 export async function generateMetadata(): Promise<Metadata> {
-  // Relative URLs in OpenGraph tags and canonicals resolve against this base, so
-  // it has to be the same address the sitemap and robots.txt use — otherwise a
-  // shared link advertises a host the reader cannot reach.
-  const [meta, base] = await Promise.all([getMeta(), siteURL()]);
+  const meta = await getMeta();
   return {
-    metadataBase: new URL(base),
+    // Every relative URL in the metadata below resolves against this base, which
+    // is the configured public address rather than the request's Host header.
+    metadataBase: new URL(SITE_URL),
     title: {
       default: meta.site_name,
       template: `%s · ${meta.site_name}`,

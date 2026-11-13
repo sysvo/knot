@@ -165,6 +165,10 @@ export default function SettingsForm({
                 onChange={(event) => setAvatarUrl(event.target.value)}
                 placeholder="https://…"
               />
+              <span className="hint">
+                Uploading an image is preferred. A remote URL only works if this instance allows
+                them, because every reader&apos;s browser would otherwise call that host.
+              </span>
             </div>
             <label className="btn btn-sm" style={{ cursor: "pointer", alignSelf: "flex-start" }}>
               Upload image

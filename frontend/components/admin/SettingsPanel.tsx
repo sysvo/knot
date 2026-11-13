@@ -112,6 +112,11 @@ export default function SettingsPanel({
   const [testBusy, setTestBusy] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; text: string } | null>(null);
 
+  // Message bodies are fetched one at a time: a queued magic link is a working
+  // credential, so reading one is a deliberate action rather than something the
+  // page loads on its own. The API writes it to the audit log.
+  const [bodies, setBodies] = useState<Record<number, string>>({});
+
   const passwordSet = settings.smtp_password_set === "true";
 
   async function save(form: HTMLFormElement) {
@@ -157,6 +162,27 @@ export default function SettingsPanel({
       });
     } finally {
       setTestBusy(false);
+    }
+  }
+
+  async function revealBody(id: number) {
+    // Toggle: a second click hides it again.
+    if (bodies[id] !== undefined) {
+      setBodies((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+      return;
+    }
+    try {
+      const data = await clientApi<{ message: { body: string } }>(`/api/v1/admin/mail/${id}`);
+      setBodies((prev) => ({ ...prev, [id]: data.message.body }));
+    } catch (err) {
+      setBodies((prev) => ({
+        ...prev,
+        [id]: err instanceof ApiError ? err.message : "could not read the message",
+      }));
     }
   }
 
@@ -301,23 +327,33 @@ export default function SettingsPanel({
                       {item.last_error}
                     </p>
                   )}
-                  <details style={{ marginTop: "0.4rem" }}>
-                    <summary className="tiny faint" style={{ cursor: "pointer" }}>
-                      Message contents
-                    </summary>
-                    <pre
-                      className="tiny"
-                      style={{
-                        whiteSpace: "pre-wrap",
-                        background: "var(--bg-inset)",
-                        padding: "0.6rem",
-                        borderRadius: "6px",
-                        marginTop: "0.4rem",
-                      }}
+                  <div style={{ marginTop: "0.4rem" }}>
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-sm"
+                      onClick={() => void revealBody(item.id)}
                     >
-                      {item.body}
-                    </pre>
-                  </details>
+                      {bodies[item.id] === undefined ? "Show contents" : "Hide contents"}
+                    </button>
+                    <p className="tiny faint" style={{ margin: "0.3rem 0 0" }}>
+                      Links are redacted in the list. Showing a message reveals any sign-in link
+                      in it, so the action is recorded in the audit log.
+                    </p>
+                    {bodies[item.id] !== undefined && (
+                      <pre
+                        className="tiny"
+                        style={{
+                          whiteSpace: "pre-wrap",
+                          background: "var(--bg-inset)",
+                          padding: "0.6rem",
+                          borderRadius: "6px",
+                          marginTop: "0.4rem",
+                        }}
+                      >
+                        {bodies[item.id]}
+                      </pre>
+                    )}
+                  </div>
                   <div className="row" style={{ marginTop: "0.5rem" }}>
                     <button type="button" className="btn btn-sm" onClick={() => act(item.id, "retry")}>
                       Retry now

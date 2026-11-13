@@ -204,15 +204,66 @@ off a server, and it carries its own explanation when it is opened a year later.
 ## Security posture
 
 - CSRF: `SameSite=Lax` cookies plus an `Origin` check on every unsafe method.
+  JSON bodies must be `application/json`, so a cross-site form post cannot even
+  reach a handler.
 - Every state-changing endpoint is rate limited per identity, in memory.
+- **Search snippets are escaped, not trusted.** FTS5 inserts its match delimiters
+  into whatever text was indexed, and the index holds plain text — so a snippet
+  can contain markup somebody typed inside a code block. The store therefore marks
+  matches with control characters and the API escapes every segment with
+  `html.EscapeString` before writing its own `<mark>` pair. A snippet is the only
+  place post text reaches the browser as HTML.
+- **OAuth state is bound to the browser.** The state is stored server-side *and*
+  in an HttpOnly cookie limited to the callback path; the callback requires both.
+  Without the cookie half, a callback URL captured by an attacker would log a
+  victim into the attacker's account.
+- **A provider e-mail is only trusted when the provider says it is verified.**
+  GitHub's profile address is not proof of control, so it is ignored and only the
+  verified-addresses endpoint can supply one; if that call fails the identity has
+  no address and cannot be linked to an existing account.
+- **Proxy headers are opt-in.** `X-Forwarded-For` is whatever the caller sent
+  unless `KNOT_TRUST_PROXY` is set, and even then only the right-most hop — the
+  one our own proxy appended — is believed. The compose stack sets it because
+  Caddy is the only route to the API.
 - Uploads are content-sniffed; the extension comes from the bytes, not from the
   filename, and the name on disk is random. Served with `nosniff` and a sandbox
   CSP.
 - Post HTML is sanitised server-side; external links get `rel="nofollow
   noopener noreferrer"`.
+- **The HTML app sends `X-Frame-Options: DENY` and a Content-Security-Policy**
+  from Next itself, so it holds without the bundled Caddy. The CSP is
+  `default-src 'self'`, `frame-ancestors 'none'`, `object-src 'none'`,
+  `base-uri 'self'`, `form-action 'self'`. It keeps `'unsafe-inline'` for scripts
+  because Next's hydration payload and the theme bootstrap are inline, so it does
+  **not** stop an injected inline event handler — escaping and sanitising are
+  still the defence that matters. What it does stop is externally hosted script,
+  plugins, `<base>` hijacking, form exfiltration and framing.
+- **Avatars are uploaded images by default.** A remote avatar makes every
+  reader's browser call a third party, which tells that party who is reading what;
+  `KNOT_ALLOW_REMOTE_AVATARS=true` opts back in, and provider avatars are only
+  imported when it is set.
+- **The mail queue redacts links.** The admin outbox shows subject, recipient and
+  error, with `token=…` replaced: a queued magic link is a working credential, and
+  it should not land in a screenshot, a support ticket or a telemetry capture of
+  the page. Reading the full message is a separate request, rate limited and
+  written to the audit log (`admin.mail.read`), so it is a deliberate act rather
+  than something that arrives with the list.
+- **Canonical and OpenGraph URLs come from configuration only.** `KNOT_PUBLIC_URL`
+  is used verbatim; the request's `Host` header never reaches a link, a canonical
+  tag or the sitemap.
 - The last administrator cannot be demoted — the easiest way to lock yourself
   out of a self-hosted instance.
 - Passwords and tokens are never logged.
+
+### Accepted risks
+
+- **An administrator can point the mail relay at an internal address.** Blocking
+  private ranges would break the common self-hosted setup of a relay in the same
+  compose network or on localhost, which is a real deployment and a speculative
+  attack. Admin is already a fully trusted role.
+- **Public pages carry no per-request nonce.** A nonce would let `script-src`
+  drop `'unsafe-inline'`, and is the next step if inline handlers ever need to be
+  blocked by policy rather than by escaping.
 
 ## Deliberate omissions
 

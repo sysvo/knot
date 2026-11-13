@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"time"
 )
 
@@ -29,6 +31,25 @@ func (s *Store) EnqueueMail(ctx context.Context, to, subject, body string, dueAt
 		return 0, err
 	}
 	return res.LastInsertId()
+}
+
+// MailByID loads one message, body included.
+//
+// The queue listing redacts links; this is the deliberate, audited read behind
+// "show me the message" for an operator debugging a delivery.
+func (s *Store) MailByID(ctx context.Context, id int64) (*QueuedMail, error) {
+	var m QueuedMail
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, to_addr, subject, body, attempts, last_error, created_at, next_attempt_at
+		 FROM mail_outbox WHERE id = ?`, id).
+		Scan(&m.ID, &m.To, &m.Subject, &m.Body, &m.Attempts, &m.LastError, &m.CreatedAt, &m.NextTryAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &m, nil
 }
 
 // DueMail returns unsent messages whose next attempt has arrived.

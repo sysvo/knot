@@ -140,15 +140,39 @@ func (s *Server) handleGetPost(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "invalid post id")
 		return
 	}
+	viewer := currentUser(r)
 	var viewerID int64
-	if u := currentUser(r); u != nil {
-		viewerID = u.ID
+	if viewer != nil {
+		viewerID = viewer.ID
 	}
 	post, err := s.store.PostByID(r.Context(), id, viewerID)
 	if err != nil {
 		writeStoreError(s, w, r, err, "no such post")
 		return
 	}
+
+	// This endpoint mirrors the thread view: a held or removed post, and any post
+	// in a held or removed thread, is only visible to its author and moderators.
+	// Without the thread check a single approved reply would expose a thread that
+	// moderators are still holding.
+	thread, err := s.store.ThreadByID(r.Context(), post.ThreadID)
+	if err != nil {
+		writeStoreError(s, w, r, err, "no such post")
+		return
+	}
+	moderator := viewer.CanModerate()
+	isPostAuthor := viewer != nil && post.Author != nil && viewer.ID == post.Author.ID
+	isThreadAuthor := viewer != nil && thread.Author != nil && viewer.ID == thread.Author.ID
+
+	if !moderator && ((post.Deleted && !isPostAuthor) || (post.Pending && !isPostAuthor)) {
+		writeError(w, http.StatusNotFound, "not_found", "no such post")
+		return
+	}
+	if !moderator && !isThreadAuthor && (thread.Deleted || thread.Pending) {
+		writeError(w, http.StatusNotFound, "not_found", "no such post")
+		return
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{"post": post})
 }
 
@@ -356,6 +380,12 @@ func (s *Server) handleCreatePost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if thread.Deleted {
+		writeError(w, http.StatusNotFound, "not_found", "no such thread")
+		return
+	}
+	// A thread waiting for review is visible to its author and moderators; nobody
+	// else may add to it, or the queue would be interactive.
+	if thread.Pending && !u.CanModerate() && (thread.Author == nil || thread.Author.ID != u.ID) {
 		writeError(w, http.StatusNotFound, "not_found", "no such thread")
 		return
 	}
@@ -617,6 +647,11 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		s.log.Error("search", "err", err, "q", q)
 		writeError(w, http.StatusInternalServerError, "internal", "search failed")
 		return
+	}
+	// The store returns the snippet with match markers; escaping happens here, once,
+	// so no caller can accidentally hand raw post text to the browser as HTML.
+	for i := range hits {
+		hits[i].Snippet = snippetHTML(hits[i].Snippet)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"query": q, "results": hits})
 }

@@ -389,6 +389,12 @@ func (s *Store) SitemapEntries(ctx context.Context, limit int) ([]SitemapThread,
 }
 
 // Search runs a full-text query. boardSlug restricts results to one board.
+//
+// The snippet marks the matched terms with control characters rather than <mark>
+// tags. The indexed text is whatever a member typed, and FTS5 inserts the
+// delimiters into it verbatim without escaping anything, so a snippet containing
+// markup is a stored-XSS vector the moment a caller treats it as HTML. Markers are
+// turned into tags by the API after the text has been escaped.
 func (s *Store) Search(ctx context.Context, query, boardSlug string, limit int) ([]model.SearchHit, error) {
 	match := ftsQuery(query)
 	if match == "" {
@@ -397,7 +403,7 @@ func (s *Store) Search(ctx context.Context, query, boardSlug string, limit int) 
 
 	sqlText := `
 		SELECT search_index.thread_id, search_index.post_id, search_index.title, b.slug, b.name,
-		       snippet(search_index, 1, '<mark>', '</mark>', '…', 24),
+		       snippet(search_index, 1, char(2), char(3), '…', 24),
 		       COALESCE(u.username, ''), t.last_post_at, t.created_at
 		FROM search_index
 		JOIN threads t ON t.id = search_index.thread_id

@@ -1,18 +1,17 @@
 import type { MetadataRoute } from "next";
 
-import { siteURL } from "@/lib/site";
+import { SITE_URL } from "@/lib/site";
 
-// robots.txt names the sitemap URL, so it has to be rendered per request: the
-// public host is a runtime fact, and baking it at build time ships an image whose
-// robots.txt points every crawler at localhost.
+// Rendered per request rather than at build time: the public host comes from
+// KNOT_PUBLIC_URL, which a container image only has at run time. Baking it in
+// would ship a robots.txt that points every crawler at localhost.
 export const dynamic = "force-dynamic";
 
 /**
  * Everything a reader can see is crawlable. Everything that is a page of settings,
  * a moderator tool or a raw JSON endpoint is not.
  */
-export default async function robots(): Promise<MetadataRoute.Robots> {
-  const base = await siteURL();
+export default function robots(): MetadataRoute.Robots {
   return {
     rules: [
       {
@@ -21,7 +20,7 @@ export default async function robots(): Promise<MetadataRoute.Robots> {
         disallow: ["/admin", "/settings", "/notifications", "/api/", "/auth/"],
       },
     ],
-    sitemap: `${base}/sitemap.xml`,
-    host: base,
+    sitemap: `${SITE_URL}/sitemap.xml`,
+    host: SITE_URL,
   };
 }

@@ -248,6 +248,24 @@ else knows that the database is SQLite.
 Uploads are capped by `KNOT_MAX_UPLOAD_MB` and restricted to PNG, JPEG, GIF and
 WebP, identified by their content rather than their filename.
 
+## A note on proxy headers
+
+`X-Forwarded-For` decides which address a rate limit is applied to and which
+address is written to the logs, so the value is only believed when you say a
+proxy is in front:
+
+- **The compose stack sets `KNOT_TRUST_PROXY=true` for you**, because Caddy is the
+  only route to the API container. Leave it alone.
+- **Running the binary directly** (`go run ./cmd/knot serve`) defaults to `false`,
+  and should stay that way unless you put a proxy in front that overwrites the
+  header. Otherwise any caller can pick their own rate-limit bucket by sending
+  whatever address it likes — which makes password brute force and mail flooding
+  practical.
+
+If you put Caddy (or nginx, or a load balancer) in front of a directly run binary,
+set `KNOT_TRUST_PROXY=true`, make sure the proxy overwrites rather than appends
+`X-Forwarded-For`, and do not publish the API port.
+
 ## Troubleshooting
 
 **Pages load but nothing works.** Check `docker compose logs api`. If the API is

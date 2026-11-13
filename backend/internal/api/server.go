@@ -122,6 +122,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/admin/settings", s.handleAdminGetSettings)
 	mux.HandleFunc("PATCH /api/v1/admin/settings", s.handleAdminSetSettings)
 	mux.HandleFunc("POST /api/v1/admin/mail/test", s.handleAdminTestMail)
+	mux.HandleFunc("GET /api/v1/admin/mail/{id}", s.handleAdminMailItem)
 	mux.HandleFunc("GET /api/v1/admin/mail", s.handleAdminMail)
 	mux.HandleFunc("POST /api/v1/admin/mail/{id}/retry", s.handleAdminRetryMail)
 	mux.HandleFunc("DELETE /api/v1/admin/mail/{id}", s.handleAdminDeleteMail)
@@ -255,7 +256,9 @@ func (s *Server) handleServeUpload(w http.ResponseWriter, r *http.Request) {
 // handleHealth is used by container health checks and uptime monitors.
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.HealthCheck(r.Context()); err != nil {
-		writeError(w, http.StatusServiceUnavailable, "unavailable", err.Error())
+		// The caller is unauthenticated, so the driver's message stays in the log.
+		s.log.Error("health check failed", "err", err)
+		writeError(w, http.StatusServiceUnavailable, "unavailable", "the database is not reachable")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -267,15 +270,19 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 // clientIP returns the caller's address, honouring X-Forwarded-For only when
 // the deployment says a reverse proxy is in front.
+//
+// When it does, the right-most entry is used: that is the address our own proxy
+// appended. The left-most value is whatever the client chose to send, and taking
+// it would let a caller rotate its rate-limit bucket at will.
 func (s *Server) clientIP(r *http.Request) string {
 	if s.cfg.TrustProxy {
 		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			if idx := strings.IndexByte(xff, ','); idx > 0 {
-				return strings.TrimSpace(xff[:idx])
+			parts := strings.Split(xff, ",")
+			if last := strings.TrimSpace(parts[len(parts)-1]); last != "" {
+				return last
 			}
-			return strings.TrimSpace(xff)
 		}
-		if rip := r.Header.Get("X-Real-Ip"); rip != "" {
+		if rip := strings.TrimSpace(r.Header.Get("X-Real-Ip")); rip != "" {
 			return rip
 		}
 	}

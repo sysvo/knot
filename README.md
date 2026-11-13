@@ -77,7 +77,8 @@ Every value has a working default. Nothing is required to run locally.
 | `KNOT_BACKUP_DIR` | beside the database | Where backup archives are written. |
 | `KNOT_BACKUP_KEEP` | `7` | How many daily backups to keep; `0` turns them off. |
 | `KNOT_SECURE_COOKIES` | derived from `KNOT_PUBLIC_URL` | Set `true` when served over HTTPS. |
-| `KNOT_TRUST_PROXY` | `true` | Read `X-Forwarded-For` for rate limiting and logs. |
+| `KNOT_TRUST_PROXY` | `false` | Believe `X-Forwarded-For` from the proxy in front. The compose stack enables it. |
+| `KNOT_ALLOW_REMOTE_AVATARS` | `false` | Allow profile pictures hosted outside this instance. |
 | `KNOT_SESSION_TTL` | `720h` | How long a sign-in lasts. |
 | `KNOT_MAX_UPLOAD_MB` | `8` | Largest accepted image. |
 | `KNOT_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error`. |

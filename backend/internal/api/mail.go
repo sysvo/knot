@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -202,6 +203,14 @@ func (s *Server) handleAdminMail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cfg := s.smtpConfig(r.Context())
+	// The listing exists to answer "why did this not arrive", which needs the
+	// subject, the recipient and the error — not a live sign-in link. Magic-link
+	// and reset bodies carry one-time tokens, so an admin session (or a stolen
+	// one) must not be able to turn them into a session for any account.
+	for i := range items {
+		items[i].Body = redactMailBody(items[i].Body)
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"configured":   cfg.Enabled(),
 		"pending":      pending,
@@ -209,6 +218,42 @@ func (s *Server) handleAdminMail(w http.ResponseWriter, r *http.Request) {
 		"max_attempts": mail.MaxAttempts,
 		"items":        items,
 	})
+}
+
+// mailTokenPattern matches the value of a one-time token in a mail link.
+var mailTokenPattern = regexp.MustCompile(`(token=)[A-Za-z0-9_-]+`)
+
+// redactMailBody hides the tokens embedded in a queued message.
+func redactMailBody(body string) string {
+	return mailTokenPattern.ReplaceAllString(body, "${1}[redacted]")
+}
+
+// handleAdminMailItem returns one queued message in full.
+//
+// It is separate from the listing on purpose: reading a body means reading a
+// working sign-in link, so it is a deliberate act, rate limited and written to the
+// audit log rather than something that turns up in a screenshot of the outbox.
+func (s *Server) handleAdminMailItem(w http.ResponseWriter, r *http.Request) {
+	admin := s.mustAdmin(w, r)
+	if admin == nil {
+		return
+	}
+	if !s.allow(w, r, "mail-read", 20, 10) {
+		return
+	}
+	id, ok := idParam(r, "id")
+	if !ok {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid message id")
+		return
+	}
+	msg, err := s.store.MailByID(r.Context(), id)
+	if err != nil {
+		writeStoreError(s, w, r, err, "no such message")
+		return
+	}
+	_ = s.store.Log(r.Context(), admin.ID, "admin.mail.read", "mail", id, "")
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, map[string]any{"message": msg})
 }
 
 func (s *Server) handleAdminRetryMail(w http.ResponseWriter, r *http.Request) {

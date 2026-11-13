@@ -472,6 +472,21 @@ type profileRequest struct {
 	AvatarURL   string `json:"avatar_url"`
 }
 
+// avatarAllowed reports whether a profile picture URL may be stored.
+//
+// Images uploaded here are served from this instance. Anything else makes every
+// reader's browser fetch from a third party, which hands that party the reader's
+// address and the threads they open, so remote avatars are opt-in.
+func (s *Server) avatarAllowed(url string) bool {
+	if url == "" {
+		return true
+	}
+	if strings.HasPrefix(url, "/uploads/") {
+		return true
+	}
+	return s.cfg.AllowRemoteAvatars && strings.HasPrefix(url, "https://")
+}
+
 func (s *Server) handleUpdateProfile(w http.ResponseWriter, r *http.Request) {
 	u := currentUser(r)
 	if u == nil {
@@ -498,8 +513,9 @@ func (s *Server) handleUpdateProfile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid", "bio is too long")
 		return
 	}
-	if avatar != "" && !strings.HasPrefix(avatar, "https://") && !strings.HasPrefix(avatar, "/uploads/") {
-		writeError(w, http.StatusBadRequest, "invalid", "avatar must be an https:// URL or an uploaded image")
+	if avatar != "" && !s.avatarAllowed(avatar) {
+		writeError(w, http.StatusBadRequest, "invalid",
+			"avatar must be an image uploaded here")
 		return
 	}
 

@@ -24,12 +24,16 @@ export default function Avatar({
     return (
       // A plain <img> keeps remote avatars working without configuring a list of
       // allowed hosts, and avoids an optimiser round trip for a 32px image.
+      // no-referrer means the image host learns the reader's address but not which
+      // page they were reading. Instances that care can turn remote avatars off
+      // entirely (KNOT_ALLOW_REMOTE_AVATARS).
       // eslint-disable-next-line @next/next/no-img-element
       <img
         src={user.avatar_url}
         alt=""
         className={className}
         loading="lazy"
+        referrerPolicy="no-referrer"
         width={96}
         height={96}
       />

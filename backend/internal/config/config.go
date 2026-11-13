@@ -44,6 +44,8 @@ type Config struct {
 	// against losing the disk; copying it elsewhere is the operator's job.
 	BackupDir  string
 	BackupKeep int
+	// AllowRemoteAvatars permits profile pictures hosted elsewhere.
+	AllowRemoteAvatars bool
 
 	// SMTP is only the starting point: the admin panel stores its own copy in the
 	// database, which wins over this when it is set. Env variables are here so
@@ -67,11 +69,18 @@ func Load() (*Config, error) {
 		DatabasePath:  env("KNOT_DB", "data/knot.db"),
 		UploadDir:     env("KNOT_UPLOAD_DIR", "data/uploads"),
 		SecureCookies: envBool("KNOT_SECURE_COOKIES", strings.HasPrefix(env("KNOT_PUBLIC_URL", ""), "https://")),
-		TrustProxy:    envBool("KNOT_TRUST_PROXY", true),
+		// Off by default: X-Forwarded-For is trivially forged by whoever is
+		// talking to us, so it may only be believed when the operator says there
+		// is a proxy in front that overwrites it. The compose stack sets this.
+		TrustProxy:    envBool("KNOT_TRUST_PROXY", false),
 		SessionTTL:    envDuration("KNOT_SESSION_TTL", 30*24*time.Hour),
 		MaxUploadSize: int64(envInt("KNOT_MAX_UPLOAD_MB", 8)) << 20,
 		BackupDir:     env("KNOT_BACKUP_DIR", ""),
 		BackupKeep:    envInt("KNOT_BACKUP_KEEP", 7),
+		// Avatars default to uploads on this instance. A remote URL makes every
+		// reader's browser call a third party, which tells that party who is
+		// reading which thread.
+		AllowRemoteAvatars: envBool("KNOT_ALLOW_REMOTE_AVATARS", false),
 		SMTP: mail.Config{
 			Host: env("KNOT_SMTP_HOST", ""),
 			Port: envInt("KNOT_SMTP_PORT", 587),

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -30,6 +31,11 @@ type identity struct {
 	EmailVerified  bool
 	AvatarURL      string
 }
+
+// oauthStateCookie carries the state of an in-flight sign-in to the browser that
+// started it. The stored row alone is not enough: anybody who captures a callback
+// URL could otherwise hand a victim a session for the attacker's account.
+const oauthStateCookie = "knot_oauth_state"
 
 // safeRedirect only accepts same-site paths, so the callback cannot be used as
 // an open redirect.
@@ -74,6 +80,11 @@ func (s *Server) handleOAuthStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Only the browser holding this cookie may finish this flow. SameSite=Lax keeps
+	// it off cross-site subrequests while still sending it on the provider's
+	// top-level redirect back here.
+	s.setOAuthStateCookie(w, state, 10*time.Minute)
+
 	q := url.Values{}
 	q.Set("client_id", provider.ClientID)
 	q.Set("redirect_uri", s.cfg.RedirectURL(provider.Name))
@@ -85,6 +96,61 @@ func (s *Server) handleOAuthStart(w http.ResponseWriter, r *http.Request) {
 	q.Set("allow_signup", "true")
 
 	http.Redirect(w, r, provider.AuthURL+"?"+q.Encode(), http.StatusFound)
+}
+
+// setOAuthStateCookie remembers the state for the browser that started the flow.
+func (s *Server) setOAuthStateCookie(w http.ResponseWriter, state string, ttl time.Duration) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     oauthStateCookie,
+		Value:    state,
+		Path:     "/api/v1/auth/oauth",
+		HttpOnly: true,
+		Secure:   s.cfg.SecureCookies,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   int(ttl.Seconds()),
+	})
+}
+
+func (s *Server) clearOAuthStateCookie(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     oauthStateCookie,
+		Value:    "",
+		Path:     "/api/v1/auth/oauth",
+		HttpOnly: true,
+		Secure:   s.cfg.SecureCookies,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   -1,
+	})
+}
+
+// providerEmail is one entry from a provider's verified-addresses endpoint.
+type providerEmail struct {
+	Email    string `json:"email"`
+	Primary  bool   `json:"primary"`
+	Verified bool   `json:"verified"`
+}
+
+// pickVerifiedEmail chooses the address to trust: the primary one if it is
+// verified, otherwise the first verified address, otherwise nothing at all.
+// An unverified address is never returned, because the result decides whether a
+// provider identity may be linked to an existing local account.
+func pickVerifiedEmail(list []providerEmail) (string, bool) {
+	fallback := ""
+	for _, e := range list {
+		if !e.Verified || e.Email == "" {
+			continue
+		}
+		if e.Primary {
+			return e.Email, true
+		}
+		if fallback == "" {
+			fallback = e.Email
+		}
+	}
+	if fallback != "" {
+		return fallback, true
+	}
+	return "", false
 }
 
 // handleOAuthCallback completes the flow and starts a session.
@@ -118,6 +184,17 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 	code := r.URL.Query().Get("code")
 	if state == "" || code == "" {
 		fail("oauth_invalid")
+		return
+	}
+
+	// The flow must be finished by the browser that started it. Comparing against
+	// the cookie also means a state that leaks (referrer, logs, a shared URL) is
+	// useless on its own.
+	cookie, err := r.Cookie(oauthStateCookie)
+	s.clearOAuthStateCookie(w)
+	if err != nil || subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(state)) != 1 {
+		s.log.Warn("oauth state did not match the browser", "provider", provider.Name)
+		fail("oauth_state")
 		return
 	}
 
@@ -192,8 +269,14 @@ func (s *Server) ensureOAuthAccount(ctx context.Context, providerName string, id
 	if err != nil {
 		return nil, err
 	}
-	if ident.AvatarURL != "" || ident.DisplayName != "" {
-		_ = s.store.UpdateProfile(ctx, acct.User.ID, ident.DisplayName, "", ident.AvatarURL)
+	// A provider avatar is hosted elsewhere, so it is only kept when the operator
+	// has said remote avatars are acceptable.
+	avatar := ""
+	if s.avatarAllowed(ident.AvatarURL) {
+		avatar = ident.AvatarURL
+	}
+	if avatar != "" || ident.DisplayName != "" {
+		_ = s.store.UpdateProfile(ctx, acct.User.ID, ident.DisplayName, "", avatar)
 	}
 	if err := s.store.LinkOAuth(ctx, providerName, ident.ProviderUserID, acct.User.ID); err != nil {
 		return nil, err
@@ -291,7 +374,6 @@ func (s *Server) exchangeCode(ctx context.Context, provider config.Provider, cod
 			ID        int64  `json:"id"`
 			Login     string `json:"login"`
 			Name      string `json:"name"`
-			Email     string `json:"email"`
 			AvatarURL string `json:"avatar_url"`
 		}
 		if err := json.Unmarshal(profile, &p); err != nil {
@@ -303,29 +385,22 @@ func (s *Server) exchangeCode(ctx context.Context, provider config.Provider, cod
 		ident.ProviderUserID = strconv.FormatInt(p.ID, 10)
 		ident.Username = p.Login
 		ident.DisplayName = p.Name
-		ident.Email = p.Email
-		ident.EmailVerified = p.Email != ""
 		ident.AvatarURL = p.AvatarURL
-
-		// GitHub hides the address unless it is public; the dedicated endpoint
-		// with user:email scope is authoritative.
+		// The address on the public profile is whatever the user typed into
+		// GitHub; nothing verifies that they still control it. It is therefore
+		// not used, and never marked verified. Only the endpoint below, which
+		// reports a verified flag, can supply a usable address — and if it fails
+		// the identity stays without one, which means no account linking.
 		if provider.EmailURL != "" {
-			if emails, err := s.fetchJSON(ctx, provider.EmailURL, token.AccessToken); err == nil {
-				var list []struct {
-					Email    string `json:"email"`
-					Primary  bool   `json:"primary"`
-					Verified bool   `json:"verified"`
-				}
-				if json.Unmarshal(emails, &list) == nil {
-					for _, e := range list {
-						if e.Primary || e.Verified {
-							ident.Email = e.Email
-							ident.EmailVerified = e.Verified
-							if e.Primary {
-								break
-							}
-						}
-					}
+			emails, err := s.fetchJSON(ctx, provider.EmailURL, token.AccessToken)
+			if err != nil {
+				s.log.Warn("oauth email lookup failed", "provider", provider.Name, "err", err)
+			} else {
+				var list []providerEmail
+				if err := json.Unmarshal(emails, &list); err != nil {
+					s.log.Warn("oauth email list unreadable", "provider", provider.Name, "err", err)
+				} else {
+					ident.Email, ident.EmailVerified = pickVerifiedEmail(list)
 				}
 			}
 		}

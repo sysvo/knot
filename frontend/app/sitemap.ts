@@ -1,7 +1,7 @@
 import type { MetadataRoute } from "next";
 
 import { publicApi } from "@/lib/server";
-import { siteURL } from "@/lib/site";
+import { SITE_URL } from "@/lib/site";
 
 type SitemapData = {
   threads: { id: number; last_post_at: number }[];
@@ -18,10 +18,8 @@ function stamp(seconds: number): Date | undefined {
  * Static routes are listed here because Next has no other way to know about them.
  */
 export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
-  const [base, data] = await Promise.all([
-    siteURL(),
-    publicApi<SitemapData>("/api/v1/sitemap", { threads: [], boards: [] }),
-  ]);
+  const data = await publicApi<SitemapData>("/api/v1/sitemap", { threads: [], boards: [] });
+  const base = SITE_URL;
 
   return [
     { url: `${base}/`, changeFrequency: "hourly", priority: 1 },

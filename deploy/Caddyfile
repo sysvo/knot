@@ -19,8 +19,12 @@
 
 	header {
 		# The API sets its own conservative headers; these cover the HTML app.
+		# The Next server also sends a CSP and this header, so the app keeps them
+		# even when it is run without Caddy; repeating them here covers any
+		# response that reaches the browser through a path Next does not handle.
 		Referrer-Policy strict-origin-when-cross-origin
 		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
 		-Server
 	}
 

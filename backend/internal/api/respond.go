@@ -76,13 +76,10 @@ func isJSONContentType(ct string) bool {
 			break
 		}
 	}
-	switch ct {
-	case "application/json", "application/json; charset=utf-8", "text/plain":
-		// text/plain is allowed for sendBeacon-style calls that cannot set a
-		// content type.
-		return true
-	}
-	return false
+	// Only application/json: text/plain is exactly what a cross-site form or a
+	// no-cors fetch can send, and accepting it would remove one layer of CSRF
+	// defence in depth for the sake of a client that does not exist here.
+	return ct == "application/json"
 }
 
 // pageParams reads ?page= and ?per_page= and clamps them.
